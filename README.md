@@ -48,6 +48,44 @@ flowchart LR
 4. **Follow the full setup walkthrough:**
    See [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) for step-by-step instructions on connecting personal, team, and confidential NDA repositories.
 
+## Phase 0 Configuration and Contracts
+
+Use Node.js 26.13.1 or later and Yarn. `loadConfig()` requires `factory.yaml`, `models.yaml`,
+and the private `repos.yaml`, validates them, and merges repository defaults and overrides. To load
+the committed example explicitly, call `loadConfig(configDir, "repos.example.yaml")`. The loader
+checks all model routes against the provider registry and rejects cloud routes when
+`allow_cloud_llm: false`.
+
+```bash
+yarn build
+node --input-type=module <<'NODE'
+import { loadConfig, resolveCredentials } from "./dist/engine/config_loader.js";
+import { validateContract, TicketSchema } from "./dist/engine/contracts.js";
+
+const config = await loadConfig();
+resolveCredentials(config, { repositoryId: "ecommerce-api", role: "planner" });
+validateContract(TicketSchema, {
+  id: "42",
+  project: "ecommerce-api",
+  title: "Fix duplicate signup",
+  description: "Return an error when the email already exists.",
+  acceptance_criteria: ["Return status 400"],
+  state: "ai_ready",
+  author: "owner",
+  url: "https://example.com/issues/42"
+});
+NODE
+```
+
+Set the selected tracker and provider environment variables before resolving credentials. The returned
+credential object contains secret values, so pass it to the configured adapter and never print it. Errors
+identify missing environment variable names and validation field paths without exposing values or YAML.
+The `typescript7` alias runs typecheck and build with TypeScript 7.0.2. Root `typescript` 6.0.2
+provides the parser API required by the current TypeScript ESLint release.
+
+Run Phase 0 checks with `yarn format:check`, `yarn lint`, `yarn typecheck`, `yarn test`, and
+`yarn build` under Node.js 26.13.1 or later.
+
 ---
 
 ## Repository Structure

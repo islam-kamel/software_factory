@@ -7,3 +7,5 @@ config/repos.yaml
 
 # Idea Files
 .idea/
+node_modules/
+dist/

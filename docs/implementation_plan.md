@@ -42,10 +42,13 @@ flowchart TB
 - `tests/unit/test_config_loader.*` & `tests/unit/test_privacy_guard.*` — Unit tests using fixture YAML files.
 
 ### Acceptance Criteria
-- [ ] Loading `config/repos.example.yaml` merges `defaults` and per-repo `overrides` accurately.
-- [ ] Missing required env vars (`api_key_env`, `token_env`) fail fast with the env var name (never printing secret values).
-- [ ] Setting `allow_cloud_llm: false` with a cloud provider (`is_local: false`) raises a hard failure (fail-closed).
-- [ ] Validating malformed `Ticket`, `AgentResult`, or `VerificationResult` payloads fails with clear field errors.
+- [x] Loading `config/repos.example.yaml` merges `defaults` and per-repo `overrides` accurately.
+- [x] Missing required env vars (`api_key_env`, `token_env`) fail fast with the env var name (never printing secret values).
+- [x] Setting `allow_cloud_llm: false` with a cloud provider (`is_local: false`) raises a hard failure (fail-closed).
+- [x] Validating malformed `Ticket`, `AgentResult`, or `VerificationResult` payloads fails with clear field errors.
+
+Verified on Node.js 26.13.1 with `yarn format:check`, `yarn lint`, `yarn typecheck`,
+`yarn test` (23 tests), `yarn build`, and a redacted Gitleaks scan of changed files.
 
 ---
 
