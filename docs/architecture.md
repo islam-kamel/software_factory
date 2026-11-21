@@ -20,7 +20,7 @@ Before looking at folders, keep these 4 simple rules in mind:
 Here is the expanded version of your folder tree. Every folder has one clear job:
 
 ```text
-ai-factory/
+software_factory/
 ├── config/                         # Settings files (change tools here, not in code)
 │   ├── factory.yaml                # Global limits (max retries, active adapters)
 │   ├── models.yaml                 # Assigns which AI model runs each role
