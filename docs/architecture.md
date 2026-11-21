@@ -1,6 +1,6 @@
-# AI Software Factory — Architecture Guide
+# Software Factory — Architecture Guide
 
-This document explains the **structure** of the AI Software Factory. It is designed to be simple for beginners, safe for existing projects, and **100% free from Vendor Lock-in**.
+This document explains the **structure** of the Software Factory. It is designed to be simple for beginners, safe for existing projects, and **100% free from Vendor Lock-in**.
 
 ---
 
@@ -24,7 +24,9 @@ ai-factory/
 ├── config/                         # Settings files (change tools here, not in code)
 │   ├── factory.yaml                # Global limits (max retries, active adapters)
 │   ├── models.yaml                 # Assigns which AI model runs each role
-│   └── repos.yaml                  # List of your existing projects to manage
+│   ├── repos.example.yaml          # Committed template for connecting existing projects
+│   ├── repos.yaml                  # Your local project registry (gitignored for privacy)
+│   └── contexts/                   # Optional external AGENTS.md / extra rules for client repos
 │
 ├── src/
 │   ├── agents/                     # AI roles and prompt instructions
@@ -202,26 +204,18 @@ roles:
 
 ## 6. Connecting Existing (Brownfield) Projects
 
-You do **not** need to copy the factory into every project. Keep the factory in one place and list your existing repos in `config/repos.yaml`:
+You do **not** need to copy the factory into every project. Keep the factory in one place, copy [`config/repos.example.yaml`](../config/repos.example.yaml) to `config/repos.yaml` (gitignored so local paths and client repos stay private), and configure your repositories there.
 
-```yaml
-projects:
-  - name: "ecommerce-api"
-    repo_url: "username/ecommerce-api"
-    local_path: "/home/dev/projects/ecommerce-api"
-    base_branch: "main"
-    verify_command: "npm run typecheck && npm run lint && npm test"
-    require_human_approval: true
+### Structure of `config/repos.yaml`
+* **`defaults` & per-repo `overrides`:** Define shared rules once (labels, `ai/` branch prefix, Draft PRs, `max_retries`, default models, notifications, and baseline privacy settings), and override only what differs for a specific client or confidential repo.
+* **`tracker` (`token_env` + `allowed_approvers`):** Reference only the environment variable name for each repo's token (never raw secrets), and restrict `/approve` to trusted maintainers.
+* **`verification`:** Register deterministic checks (`secret_scan`, `lint`, `typecheck`, `test`) that power the Self-Healing Loop.
+* **`privacy`:** Classify each repo (`public` | `internal` | `confidential`), define `ignore_paths` (e.g., `.env*`, `certs/**`), and set `allow_cloud_llm: false` on confidential projects so the Engine fails closed if a cloud provider is configured.
 
-  - name: "billing-service"
-    repo_url: "username/billing-service"
-    local_path: "/home/dev/projects/billing-service"
-    base_branch: "develop"
-    verify_command: "pytest"
-    require_human_approval: true
-```
+### Context Layering (`AGENTS.md` Handling)
+Not every existing repository is the same, so `context.mode` supports three modes:
+1. **`repo_only`:** Uses the repository's existing `AGENTS.md` directly (zero duplicate maintenance).
+2. **`merge`:** Combines the repository's `AGENTS.md` with a factory-side `factory_extra` file (e.g., `./config/contexts/global-factory-rules.md`) without modifying the team's file. **Precedence rule:** factory rules win on security and workflow; the repo's `AGENTS.md` wins on code style and architecture.
+3. **`factory_only`:** Uses only a context file stored inside `./config/contexts/` so **zero files** are added to a client's repository (Zero Footprint).
 
-Inside each existing project, you only need **one small file**: `AGENTS.md`. It tells the factory:
-* How the folder structure works.
-* Coding style rules to follow.
-* Which sensitive folders are **Do Not Touch** (e.g., auth, payments, old database migrations).
+> **Token Tip:** Modern CLI agents (OpenCode, Claude Code, Codex) auto-load root `AGENTS.md` files. `context_builder` should verify the file exists and inject only `factory_extra` (or a path pointer for non-root files) to avoid sending the same `AGENTS.md` twice.

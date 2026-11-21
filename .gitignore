@@ -1,5 +1,9 @@
 # Environment Protocol
+.env
 .env.*.local
+
+# Private Factory Config (commit config/repos.example.yaml instead)
+config/repos.yaml
 
 # Idea Files
 .idea/

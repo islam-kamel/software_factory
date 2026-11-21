@@ -1,0 +1,37 @@
+[
+  {
+    "name": "ai-ready",
+    "color": "0E8A16",
+    "description": "Ticket is scoped and ready for AI Software Factory Planner"
+  },
+  {
+    "name": "ai-planning",
+    "color": "1D76DB",
+    "description": "Locked by Factory Engine while Planner generates PLAN.md"
+  },
+  {
+    "name": "needs-approval",
+    "color": "FBCA04",
+    "description": "PLAN.md posted — awaiting human /approve comment"
+  },
+  {
+    "name": "ai-approved",
+    "color": "5319E7",
+    "description": "Approved by authorized maintainer; queued for Builder"
+  },
+  {
+    "name": "ai-building",
+    "color": "0052CC",
+    "description": "Builder and Self-Healing Verifier running in isolated worktree"
+  },
+  {
+    "name": "ai-pr-ready",
+    "color": "2EA44F",
+    "description": "Draft PR opened and reviewed; ready for human merge"
+  },
+  {
+    "name": "ai-failed",
+    "color": "D93F0B",
+    "description": "Circuit breaker tripped or agent errored; check logs before retrying"
+  }
+]

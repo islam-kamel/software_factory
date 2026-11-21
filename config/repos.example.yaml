@@ -1,0 +1,183 @@
+# config/repos.example.yaml
+# Template for the central registry of repositories managed by Software Factory.
+#
+# Usage:
+#   1. Copy this file to `config/repos.yaml` (gitignored so local paths and client repos stay private).
+#   2. Never put raw API keys or Git tokens here — reference environment variable names via `token_env`
+#      and store actual secrets in `.env` (gitignored) or CI Secrets.
+
+version: "1.0"
+
+# 1. Global defaults applied to every repository (can be overridden per repo)
+defaults:
+  base_branch: "main"
+  branch_prefix: "ai/"            # All factory branches must start with ai/
+  draft_pr: true                  # Always open Draft PRs for human review before merge
+  approval_command: "/approve"
+  max_retries: 3                  # Max attempts in the Self-Healing Loop before circuit breaker trips
+
+  # Context Layering: supports repos with or without their own AGENTS.md
+  # Modes:
+  #   - repo_only:    Use the repo's own context file only.
+  #   - merge:        Combine repo context + factory_extra rules (factory wins on security/workflow;
+  #                   repo AGENTS.md wins on code style/architecture).
+  #   - factory_only: Use only factory_extra (Zero Footprint inside client repos).
+  context:
+    mode: "merge"                 # repo_only | merge | factory_only
+    repo_files:                   # Checked in order inside the target repository
+      - "AGENTS.md"
+      - ".factory/AGENTS.md"
+      - "CLAUDE.md"
+    factory_extra: "./config/contexts/global-factory-rules.md"
+
+  # Ticket state labels (prevents duplicate agent runs on the same ticket)
+  labels:
+    ready: "ai-ready"
+    planning: "ai-planning"
+    needs_approval: "needs-approval"
+    approved: "ai-approved"
+    building: "ai-building"
+    pr_ready: "ai-pr-ready"
+    failed: "ai-failed"
+
+  # Role-to-model routing (decoupled from engine to avoid vendor lock-in)
+  agents:
+    planner:
+      cli: "opencode"
+      provider: "openrouter"
+      model: "anthropic/claude-sonnet"
+    builder:
+      cli: "opencode"
+      provider: "opencode-go"
+      model: "glm-5.3"
+    reviewer:
+      cli: "opencode"
+      provider: "openrouter"
+      model: "anthropic/claude-opus"
+
+  # Notification channels
+  notifications:
+    tracker_mention: true         # @mention owner on ticket updates
+    external:
+      provider: "telegram"        # telegram | discord | slack | none
+      enabled: true
+
+  # Baseline privacy guardrails
+  privacy:
+    data_classification: "internal"   # public | internal | confidential
+    allow_cloud_llm: true             # Set false on confidential repos to fail-closed against cloud LLMs
+    ignore_paths:
+      - ".env*"
+      - "*.pem"
+      - "*.key"
+      - "secrets/**"
+
+# 2. Managed repositories (Brownfield / Existing Projects)
+repos:
+  # Example 1: Standard project with its own AGENTS.md (repo_only)
+  - id: "ecommerce-api"
+    enabled: true
+    visibility: "private"
+    local_path: "/path/to/projects/ecommerce-api"
+    use_worktree: true            # Isolate each ticket in a separate git worktree
+    base_branch: "develop"
+
+    context:
+      mode: "repo_only"           # Rely solely on the repo's AGENTS.md
+
+    tracker:
+      provider: "github"          # github | gitlab | jira | local_md
+      repo: "your-username/ecommerce-api"
+      token_env: "GITHUB_TOKEN"
+      allowed_approvers:
+        - "your-username"         # Security: only listed maintainers can trigger /approve
+
+    verification:
+      secret_scan: "gitleaks detect --source . --no-git"
+      lint: "npm run lint"
+      typecheck: "npm run typecheck"
+      test: "npm test"
+
+  # Example 2: Team/client repo with its own AGENTS.md + factory extra rules (merge) and overrides
+  - id: "client-dashboard"
+    enabled: true
+    visibility: "private"
+    local_path: "/path/to/projects/client-dashboard"
+    use_worktree: true
+    base_branch: "main"
+
+    context:
+      mode: "merge"
+      repo_files:
+        - "AGENTS.md"
+        - ".factory/AGENTS.md"
+      factory_extra: "./config/contexts/client-dashboard-extra.md"
+
+    tracker:
+      provider: "github"
+      repo: "client-org/dashboard"
+      token_env: "CLIENT_DASHBOARD_GH_TOKEN"
+      allowed_approvers:
+        - "your-username"
+
+    verification:
+      secret_scan: "gitleaks detect --source . --no-git"
+      lint: "pnpm lint"
+      test: "pnpm test --run"
+
+    # Per-repo overrides (e.g., use GitHub Copilot Business for NDA/IP indemnity and fewer retries)
+    overrides:
+      max_retries: 2
+      agents:
+        builder:
+          cli: "copilot-cli"
+          provider: "github-copilot"
+
+  # Example 3: Confidential / NDA client repo (Zero Footprint + Fail-Closed Local LLM only)
+  - id: "fintech-client-api"
+    enabled: false                # Set to true when ready to activate
+    visibility: "private"
+    local_path: "/path/to/clients/fintech-api"
+    use_worktree: true
+    base_branch: "main"
+
+    # Context kept strictly inside the factory folder so zero files are added to the client repo
+    context:
+      mode: "factory_only"
+      factory_extra: "./config/contexts/fintech-client.AGENTS.md"
+
+    tracker:
+      provider: "github"
+      repo: "fintech-org/private-api"
+      token_env: "FINTECH_GH_TOKEN"   # Env var name only; actual token lives in .env
+      allowed_approvers:
+        - "your-username"
+
+    privacy:
+      data_classification: "confidential"
+      allow_cloud_llm: false          # Engine must fail-closed if a cloud provider is configured
+      ignore_paths:
+        - ".env*"
+        - "certs/**"
+        - "config/production.json"
+
+    verification:
+      secret_scan: "gitleaks detect --source . --no-git"   # Blocks push if any secret leaks
+      lint: "npm run lint"
+      test: "npm test"
+
+    # Force local-only LLM models so code never leaves your machine/network
+    overrides:
+      agents:
+        planner:
+          cli: "opencode"
+          provider: "ollama-local"
+          model: "qwen2.5-coder:32b"
+        builder:
+          cli: "opencode"
+          provider: "ollama-local"
+          model: "qwen2.5-coder:32b"
+        reviewer:
+          cli: "opencode"
+          provider: "ollama-local"
+          model: "qwen2.5-coder:32b"

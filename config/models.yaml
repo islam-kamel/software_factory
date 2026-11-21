@@ -1,0 +1,51 @@
+# config/models.yaml
+# Vendor-neutral provider registry and role-to-model assignments.
+# Never store raw API keys here — reference environment variable names via `api_key_env`.
+
+version: "1.0"
+
+# Provider definitions (`is_local` is checked by the engine to enforce `privacy.allow_cloud_llm: false`)
+providers:
+  openrouter:
+    is_local: false
+    api_key_env: "OPENROUTER_API_KEY"
+    base_url: "https://openrouter.ai/api/v1"
+
+  opencode-go:
+    is_local: false
+    api_key_env: "OPENCODE_API_KEY"
+
+  github-copilot:
+    is_local: false
+    auth_mode: "cli"
+
+  ollama-local:
+    is_local: true
+    base_url: "http://localhost:11434"
+
+# Default model routing per agent role (can be overridden per repo in config/repos.yaml)
+roles:
+  planner:
+    cli: "opencode"
+    provider: "openrouter"
+    model: "anthropic/claude-sonnet"
+    access: "read_only"
+    temperature: 0.2
+
+  builder:
+    cli: "opencode"
+    provider: "opencode-go"
+    model: "glm-5.3"
+    access: "read_write"
+    temperature: 0.1
+
+  reviewer:
+    cli: "opencode"
+    provider: "openrouter"
+    model: "anthropic/claude-opus"
+    access: "read_only"
+    temperature: 0.1
+
+# Example: To run a role 100% locally (free / confidential NDA repos), switch provider & model to:
+#   provider: "ollama-local"
+#   model: "qwen2.5-coder:32b"

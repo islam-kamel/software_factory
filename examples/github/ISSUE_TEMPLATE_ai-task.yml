@@ -1,0 +1,60 @@
+# Copy this file to `.github/ISSUE_TEMPLATE/ai-task.yml` in your target GitHub repository.
+# It gives AI agents structured context and testable acceptance criteria from the start.
+
+name: "AI Factory Task"
+description: "Create a well-scoped ticket ready for AI Software Factory (Plan -> Approve -> Draft PR)"
+title: "[AI]: "
+labels: ["ai-ready"]
+
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in clear, testable **Acceptance Criteria** below. The Planner agent will post a `PLAN.md`
+        for your `/approve` review before any code is written.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: "Problem / Goal"
+      description: "Describe what needs to change and why (2–4 concise sentences)."
+      placeholder: "When a user signs up with an existing email, POST /api/signup returns HTTP 500 instead of HTTP 400."
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: "Acceptance Criteria (Testable Checklist)"
+      description: "Each item should be verifiable by a unit test or command."
+      value: |
+        - [ ] 
+        - [ ] Unit tests cover the new behavior and edge cases
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope_hints
+    attributes:
+      label: "Target Files / Scope Hints (Optional)"
+      description: "Point the Planner to relevant folders or modules to save tokens."
+      placeholder: "src/auth/signup.ts, tests/auth/signup.test.ts"
+    validations:
+      required: false
+
+  - type: textarea
+    id: out_of_scope
+    attributes:
+      label: "Out of Scope / Do Not Touch (Optional)"
+      description: "List anything the Builder must NOT modify."
+      placeholder: "Do not modify database migrations or OAuth login flows."
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: safety_check
+    attributes:
+      label: "Safety Check"
+      options:
+        - label: "This task does not require modifying protected files (.env*, CI workflows, billing/auth core) without explicit approval."
+          required: true

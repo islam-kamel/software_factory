@@ -1,4 +1,4 @@
-# AI Software Factory — System Design
+# Software Factory — System Design
 
 While `architecture.md` shows **what** the parts are, this document explains **how** the factory runs step-by-step, how data moves between modules, how errors are handled, and how we keep your code and budget safe.
 
@@ -191,16 +191,18 @@ flowchart LR
 
 ## 6. Safety, Security & Cost Guardrails
 
-Never run autonomous AI agents without hard safety walls. This design enforces **5 non-negotiable guardrails**:
+Never run autonomous AI agents without hard safety walls. This design enforces **7 non-negotiable guardrails**:
 
-1. **Owner-Only Approval:** The `/approve` command is only accepted if the commenter matches the authorized owner/maintainer list. Strangers cannot trigger your AI or spend your credits.
+1. **Owner-Only Approval (`allowed_approvers`):** The `/approve` command is only accepted if the commenter matches the authorized owner/maintainer list in `config/repos.yaml`. Strangers cannot trigger your AI or spend your credits.
 2. **Draft PRs Only + Branch Protection:** The factory is physically blocked from pushing to `main` or `develop`. It can only push to branches prefixed with `ai/` and open **Draft PRs**.
 3. **Hard Circuit Breakers:**
-   * Max retries per ticket: `3`
+   * Max retries per ticket: `3` (overridable per repo via `overrides.max_retries`)
    * Max runtime per agent call: `15 minutes`
    * Max cost/budget cap set directly at the LLM provider dashboard.
-4. **Secret Isolation:** API keys (LLM keys, Git tokens, Telegram tokens) are stored in environment variables (`.env` locally or encrypted Secrets in CI), never committed to Git and never passed inside prompt text.
-5. **Protected Files List:** Sensitive paths (`.env`, CI workflows, auth core, billing) are listed in `AGENTS.md` under **Do Not Touch**, and the `verifier` can reject any `git diff` that modifies forbidden files.
+4. **Secret Isolation & Gitignored Config:** Keep `config/repos.yaml` in `.gitignore` and commit only `config/repos.example.yaml`. Inside `repos.yaml`, reference only environment variable names (`token_env: "FINTECH_GH_TOKEN"`); store actual keys in `.env` (gitignored) or encrypted CI Secrets, never in Git or prompt text.
+5. **Pre-Push Secret Scanning:** Include a local secret scanner (`gitleaks` or `trufflehog`) in `verification.secret_scan` so any accidental credential leak halts the Self-Healing Loop before `git push`.
+6. **Per-Repo Privacy & Fail-Closed LLM Routing:** Each repo in `config/repos.yaml` declares `privacy.data_classification` (`public` | `internal` | `confidential`), `privacy.ignore_paths` (`.env*`, `certs/**`, `*.key`), and `privacy.allow_cloud_llm`. If `allow_cloud_llm: false` and a cloud provider is accidentally configured, the Engine **must fail closed** and refuse to run.
+7. **Protected Files & Context Layering Precedence:** Sensitive paths (`.env`, CI workflows, auth core, billing) are listed in `AGENTS.md` under **Do Not Touch** and `privacy.ignore_paths`, and `verifier` rejects diffs that modify forbidden files. When using `context.mode: "merge"`, factory rules take precedence over repo `AGENTS.md` on security and workflow, while repo `AGENTS.md` takes precedence on code style and architecture.
 
 ---
 

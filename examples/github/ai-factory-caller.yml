@@ -1,0 +1,27 @@
+# Copy this file to `.github/workflows/ai-factory.yml` inside your target GitHub repository.
+# Replace `your-username/software_factory` with your central factory repository.
+
+name: Connect to AI Software Factory
+
+on:
+  issues:
+    types: [labeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  plan:
+    if: github.event_name == 'issues' && github.event.label.name == 'ai-ready'
+    uses: your-username/software_factory/.github/workflows/ai-plan.yml@main
+    secrets: inherit
+
+  build:
+    if: >-
+      github.event_name == 'issue_comment' &&
+      !github.event.issue.pull_request &&
+      startsWith(github.event.comment.body, '/approve')
+    uses: your-username/software_factory/.github/workflows/ai-build.yml@main
+    with:
+      issue_number: ${{ github.event.issue.number }}
+      approver: ${{ github.event.comment.user.login }}
+    secrets: inherit

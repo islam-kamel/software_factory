@@ -1,0 +1,40 @@
+# config/factory.yaml
+# Global Software Factory settings.
+# Swap external services here without changing code in src/engine/, src/agents/, or src/self_healing/.
+
+version: "1.0"
+
+# Active adapter plugins (implemented under src/adapters/)
+adapters:
+  tracker: "github"         # github | gitlab | jira | local_md
+  git_host: "github"        # github | gitlab | bitbucket | local_git
+  cli_runner: "opencode"    # opencode | aider | claude_code | codex | copilot-cli
+  notifier: "telegram"      # telegram | discord | slack | console | none
+
+# Circuit breakers & execution limits
+limits:
+  max_self_heal_retries: 3
+  max_parallel_tasks: 2
+  agent_timeout_minutes: 15
+  polling_interval_seconds: 60
+
+# Isolated Git worktree settings
+workspace:
+  use_worktree: true
+  worktree_root: "/tmp/ai-factory/worktrees"
+  cleanup_on_complete: true
+  branch_prefix: "ai/"
+  draft_pr_only: true
+
+# Non-negotiable safety guardrails
+security:
+  require_human_approval: true
+  approval_command: "/approve"
+  require_secret_scan: true
+  fail_closed_on_cloud_violation: true   # Refuse to run if allow_cloud_llm is false and a cloud provider is configured
+
+# Runtime logs and cost tracking
+logging:
+  dir: "./logs"
+  level: "info"             # debug | info | warn | error
+  track_cost: true
