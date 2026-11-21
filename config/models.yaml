@@ -19,6 +19,14 @@ providers:
     is_local: false
     auth_mode: "cli"
 
+  antigravity:
+    is_local: false
+    auth_mode: "cli"
+
+  openai:
+    is_local: false
+    auth_mode: "cli"
+
   ollama-local:
     is_local: true
     base_url: "http://localhost:11434"

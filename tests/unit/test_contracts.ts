@@ -40,6 +40,23 @@ it("reports malformed fields without echoing payload values", () => {
   expect(errorMessage).not.toContain("sensitive title");
 });
 
+it("validates nullable agent telemetry without fabricating missing values", () => {
+  const unknownTelemetry = {
+    role: "planner",
+    status: "success",
+    provider_used: "codex",
+    model_used: "configured-model",
+    duration_seconds: 1,
+    tokens_used: null,
+    estimated_cost_usd: null,
+    output_file: "/tmp/PLAN.md",
+  };
+
+  expect(parseAgentResult(unknownTelemetry)).toEqual(unknownTelemetry);
+  expect(() => parseAgentResult({ ...unknownTelemetry, tokens_used: -1 })).toThrow(/tokens_used/);
+  expect(() => parseAgentResult({ ...unknownTelemetry, estimated_cost_usd: -1 })).toThrow(/estimated_cost_usd/);
+});
+
 it("validates AgentResult and VerificationResult numeric fields", () => {
   const agentResult = {
     role: "builder",

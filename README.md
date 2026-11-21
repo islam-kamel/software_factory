@@ -1,15 +1,15 @@
 # Software Factory
 
-A **vendor-neutral, Git-worktree-isolated Spec-to-PR pipeline** that turns well-scoped tickets into tested **Draft Pull Requests** across your existing (brownfield) and new repositories—while keeping humans in control of planning approval and final code merges.
+A **vendor-neutral, Linux-first ticket workflow** that plans, implements, verifies, and reviews scoped changes in a caller-provided `ai/` linked worktree. Phase 1 stores a reviewed outcome; Draft PR creation and automatic worktree management are deferred.
 
 ---
 
 ## Core Principles
 
 - **Small, Focused Agent Roles:** Work is split into **Planner** (read-only), **Builder** (write + test), and **Reviewer** (fresh-context diff audit) so no single session loses focus.
-- **Deterministic Verification & Self-Healing:** Real commands (`secret_scan`, `lint`, `typecheck`, `test`) verify every change, with an `error_parser` and a 3-retry circuit breaker.
-- **Safe Isolation:** Agents never edit `main` or `develop`. Every ticket runs inside an isolated `git worktree` on an `ai/` branch and opens a **Draft PR** only.
-- **Zero Vendor Lock-In:** Issue trackers (GitHub, GitLab, Jira, Local MD), LLM providers (OpenRouter, OpenCode Go, Copilot, Ollama), CLI runners, and notifiers plug in behind `src/adapters/` and switch via YAML config.
+- **Deterministic Verification:** Configured `secret_scan`, `lint`, `typecheck`, and `test` checks run in order and stop at the first failure. Automated repair retries are deferred.
+- **Linux Isolation:** Child commands run through Bubblewrap (`bwrap`) with user namespaces and scoped workspace access. The caller supplies a linked `ai/` worktree.
+- **Configurable CLI and Trackers:** OpenCode, Agy, and Codex runners plus Local Markdown and GitHub trackers are selected through configuration; OpenCode remains the default.
 - **Privacy & Fail-Closed Security:** Supports per-repo `ignore_paths`, pre-push secret scanning (`gitleaks`), Zero-Footprint external contexts, and `allow_cloud_llm: false` fail-closed routing to local models.
 
 ---
@@ -21,16 +21,16 @@ flowchart LR
     T["1. Ticket labeled<br/>ai-ready"] --> P["2. Planner<br/>(Read-Only -> PLAN.md)"]
     P --> H["3. Human Approval<br/>(/approve)"]
     H --> B["4. Builder<br/>(Isolated Worktree)"]
-    B --> V["5. Verify & Self-Heal<br/>(Max 3 Retries)"]
+    B --> V["5. Verify<br/>(Stop on first failure)"]
     V --> R["6. Reviewer<br/>(Fresh Context Diff)"]
-    R --> PR["7. Draft PR Ready<br/>(ai-pr-ready)"]
+    R --> D["7. Reviewed outcome<br/>(External run artifacts)"]
 ```
 
 ---
 
 ## Quick Start
 
-Development requires Node.js v26.13.1. Install the locked dependencies and run the full quality checks with:
+Development requires Node.js v26.13.1. Production execution requires Linux, Bubblewrap with user namespaces, and a dedicated unprivileged service account/home for native CLI cached authentication. Install the locked dependencies and run checks with:
 
 ```bash
 yarn install --frozen-lockfile
@@ -38,18 +38,22 @@ yarn verify
 ```
 
 1. **Set up environment variables:**
+
    ```bash
    cp .env.example .env
    ```
+
    Fill in only the keys for the providers and trackers you use (`.env` is gitignored).
 
 2. **Configure global adapters and models:**
    Review and adjust [config/factory.yaml](config/factory.yaml) and [config/models.yaml](config/models.yaml).
 
 3. **Register your repositories:**
+
    ```bash
    cp config/repos.example.yaml config/repos.yaml
    ```
+
    Add your local repository paths, `allowed_approvers`, `verification` commands, and `privacy` rules (`config/repos.yaml` is gitignored).
 
 4. **Follow the full setup walkthrough:**
@@ -89,17 +93,17 @@ software_factory/
 
 ## Documentation
 
-| Document | Audience | Purpose |
-| :--- | :--- | :--- |
-| [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) | Consumers & Developers | Step-by-step setup, connecting brownfield/private repos, and day-to-day usage |
-| [AGENTS.md](AGENTS.md) | Contributors & AI Agents | Development rules, workflow, protected files, and wrong vs. right code examples |
-| [docs/architecture.md](docs/architecture.md) | Developers | Folder layout, adapter boundaries, context layering, and configuration-driven switching |
-| [docs/system_design.md](docs/system_design.md) | Developers | End-to-end sequence flow, ticket state machine, JSON data contracts, and guardrails |
+| Document                                       | Audience                 | Purpose                                                                                 |
+| :--------------------------------------------- | :----------------------- | :-------------------------------------------------------------------------------------- |
+| [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)   | Consumers & Developers   | Step-by-step setup, connecting brownfield/private repos, and day-to-day usage           |
+| [AGENTS.md](AGENTS.md)                         | Contributors & AI Agents | Development rules, workflow, protected files, and wrong vs. right code examples         |
+| [docs/architecture.md](docs/architecture.md)   | Developers               | Folder layout, adapter boundaries, context layering, and configuration-driven switching |
+| [docs/system_design.md](docs/system_design.md) | Developers               | End-to-end sequence flow, ticket state machine, JSON data contracts, and guardrails     |
 
 ---
 
 ## Build Roadmap
 
-- **Phase 1 (MVP):** Core config, `AGENTS.md`, `src/agents/run.sh`, role prompts, and a single-repo Plan -> Build -> Verify loop.
-- **Phase 2 (Automation):** `git worktree` isolation, 3-retry self-healing loop with `error_parser`, and Telegram/Discord notifications.
+- **Phase 1 (MVP):** Complete. Local/GitHub trackers, OpenCode/Agy/Codex runners, context assembly, verifier, and plan/approval/build/review orchestration passed Linux acceptance, including one real Agy ticket lifecycle. Codex and OpenCode routes have adapter tests but were not live-tested.
+- **Phase 2 (Automation):** Automatic worktree lifecycle, locking, self-healing retries, Draft PRs, and notifications.
 - **Phase 3 (Multi-Repo & Scale):** Multi-repo runner via `config/repos.yaml`, parallel worktrees, and local Ollama hot-swapping.

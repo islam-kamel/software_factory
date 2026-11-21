@@ -1,0 +1,10 @@
+# ============================================================
+# role.yaml
+# Purpose : Grant Builder worktree access and name its summary artifact
+# Feature : Builder Agent
+# Role    : Agent Configuration
+# API Doc : docs/implementation_plan.md, Phase 1.1
+# ============================================================
+access: read_write
+prompt_file: prompt.md
+output_file: BUILDER_SUMMARY.md
