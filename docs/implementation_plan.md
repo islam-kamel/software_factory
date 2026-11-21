@@ -6,14 +6,15 @@ For architecture and data schemas, see [docs/architecture.md](architecture.md) a
 
 ---
 
-## 0. Current Baseline (Already Completed)
+## 0. Current Baseline (Foundation and Phase 0 Complete)
 
 The repository foundation, documentation, config templates, and agent prompts are already in place:
 
 - **Docs & Standards:** `README.md`, `INTEGRATION_GUIDE.md`, `CONTRIBUTING.md`, `AGENTS.md`, `LICENSE`, `docs/architecture.md`, `docs/system_design.md`
 - **Configuration & Contexts:** `.env.example`, `.gitignore`, `config/factory.yaml`, `config/models.yaml`, `config/repos.example.yaml`, `config/contexts/global-factory-rules.md`, `templates/AGENTS.template.md`
 - **Agent Prompts:** `src/agents/planner/prompt.md`, `src/agents/builder/prompt.md`, `src/agents/reviewer/prompt.md`
-- **Pending Implementation:** `src/agents/*/role.yaml`, `src/agents/run.sh`, `src/engine/*`, `src/self_healing/*`, `src/adapters/*`, and automated tests.
+- **Phase 0 Complete:** Config loading and schemas in `src/engine/config_loader.ts` and `src/engine/config_schemas.ts`, privacy checks in `src/engine/privacy_guard.ts`, contracts in `src/engine/contracts.ts`, and unit tests under `tests/unit/`.
+- **Remaining Implementation:** Phase 1 and later items below, including `role.yaml`, `src/agents/run.sh`, adapters, orchestration, self-healing, and end-to-end automation.
 
 ---
 
@@ -33,19 +34,22 @@ flowchart TB
 
 ## Phase 0 — Core Contracts & Config Validation
 
-**Goal:** Establish shared schemas, safe config loading, and fail-closed security validation before writing any engine or adapter logic.
+**Goal:** Establish shared schemas, safe config loading, and fail-closed security validation before adding workflow orchestration or adapter logic.
 
 ### Target Files
-- `src/engine/config_loader.<ext>` — Loads `config/factory.yaml`, `config/models.yaml`, and `config/repos.yaml`; resolves `defaults` + per-repo `overrides`; resolves secrets strictly from `env` (`token_env`, `api_key_env`).
-- `src/engine/privacy_guard.<ext>` — Enforces **fail-closed** policy: if a repo sets `privacy.allow_cloud_llm: false` and any role resolves to a provider with `is_local: false`, abort immediately with a clear error.
-- `src/engine/contracts.<ext>` — Schema definitions/validators for `Ticket`, `AgentResult`, and `VerificationResult` (matching `docs/system_design.md`).
-- `tests/unit/test_config_loader.*` & `tests/unit/test_privacy_guard.*` — Unit tests using fixture YAML files.
+- `src/engine/config_loader.ts` and `src/engine/config_schemas.ts` — Load and validate factory, model, and repository YAML; merge model roles, defaults, repo settings, and overrides; resolve secrets only for enabled repositories. An explicit selection must identify an enabled repo and cannot activate one.
+- `src/engine/privacy_guard.ts` — Validate provider locality and fail closed on cloud routes for every repository, including disabled repositories.
+- `src/engine/contracts.ts` — Validate `Ticket`, `AgentResult`, and `VerificationResult` against [docs/system_design.md](system_design.md).
+- `tests/unit/test_config_loader.ts` and `tests/unit/test_contracts.ts` — Cover config merging, privacy, environment references, prototype keys, and contract validation.
+- Tooling: `package.json`, `yarn.lock`, `tsconfig.json`, `eslint.config.mjs`, `.prettierrc.json`, `vite.config.ts`, and `vitest.config.ts`.
 
 ### Acceptance Criteria
-- [ ] Loading `config/repos.example.yaml` merges `defaults` and per-repo `overrides` accurately.
-- [ ] Missing required env vars (`api_key_env`, `token_env`) fail fast with the env var name (never printing secret values).
-- [ ] Setting `allow_cloud_llm: false` with a cloud provider (`is_local: false`) raises a hard failure (fail-closed).
-- [ ] Validating malformed `Ticket`, `AgentResult`, or `VerificationResult` payloads fails with clear field errors.
+- [x] Loading `config/repos.example.yaml` merges `defaults` and per-repo `overrides` accurately.
+- [x] Missing required env vars (`api_key_env`, `token_env`) fail fast with the env var name (never printing secret values).
+- [x] Setting `allow_cloud_llm: false` with a cloud provider (`is_local: false`) raises a hard failure (fail-closed).
+- [x] Validating malformed `Ticket`, `AgentResult`, or `VerificationResult` payloads fails with clear field errors.
+
+**Verification:** Node.js v26.13.1; `yarn verify` passed, including lint, typecheck, 18 unit tests, Vite build, and Node import smoke check. Independent review approved Phase 0.
 
 ---
 

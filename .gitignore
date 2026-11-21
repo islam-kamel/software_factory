@@ -10,3 +10,5 @@ config/repos.yaml
 
 # Agents
 .orchestrator/
+node_modules/
+dist/

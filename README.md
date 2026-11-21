@@ -30,6 +30,13 @@ flowchart LR
 
 ## Quick Start
 
+Development requires Node.js v26.13.1. Install the locked dependencies and run the full quality checks with:
+
+```bash
+yarn install --frozen-lockfile
+yarn verify
+```
+
 1. **Set up environment variables:**
    ```bash
    cp .env.example .env
@@ -47,6 +54,8 @@ flowchart LR
 
 4. **Follow the full setup walkthrough:**
    See [INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md) for step-by-step instructions on connecting personal, team, and confidential NDA repositories.
+
+TypeScript 6.0.2 is pinned because the current stable TypeScript ESLint parser does not support TypeScript 7 yet. Upgrade when stable parser support is available.
 
 ---
 
