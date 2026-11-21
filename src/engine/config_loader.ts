@@ -159,8 +159,8 @@ function resolveSecrets(
   repoId: string | undefined,
 ): Map<string, string> {
   const secrets = new Map<string, string>();
-  for (const repo of repositories) {
-    if (repoId === undefined ? !repo.enabled : repo.id !== repoId) continue;
+  for (const repo of repositories.filter((item) => item.enabled)) {
+    if (repoId !== undefined && repo.id !== repoId) continue;
     const tokenEnv = repo.tracker.token_env;
     if (repo.tracker.provider !== "local_md" && !tokenEnv) {
       throw new Error(`repos.${repo.id}.tracker.token_env is required`);
@@ -178,9 +178,11 @@ function resolveSecrets(
 function assertRepositorySelection(repositories: ResolvedRepository[], repoId: string | undefined): void {
   if (repoId === undefined) return;
   if (repoId.trim().length === 0) throw new Error("Selected repository ID must not be empty");
-  if (!repositories.some((repository) => repository.id === repoId)) {
+  const repository = repositories.find((item) => item.id === repoId);
+  if (!repository) {
     throw new Error("Selected repository does not exist in config");
   }
+  if (!repository.enabled) throw new Error("Selected repository is disabled; set enabled: true to activate it");
 }
 
 export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConfig> {

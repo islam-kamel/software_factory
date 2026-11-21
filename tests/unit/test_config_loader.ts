@@ -115,6 +115,7 @@ it("validates privacy for disabled repositories", async () => {
       factoryPath: join(configDir, "factory.yaml"),
       modelsPath: join(configDir, "models.yaml"),
       reposPath,
+      repoId: "fintech-client-api",
     }),
   ).rejects.toThrow(/forbids cloud LLMs/);
 });
@@ -167,17 +168,18 @@ it("rejects an unknown repoId before resolving credentials", async () => {
   ).rejects.toThrow(/Selected repository does not exist/);
 });
 
-it("allows explicitly selecting a disabled repository", async () => {
-  vi.stubEnv("FINTECH_GH_TOKEN", "test-fintech-token");
-
-  const loaded = await loadConfig({
+it("rejects explicitly selecting a disabled repository before resolving credentials", async () => {
+  const options = {
     factoryPath: join(configDir, "factory.yaml"),
     modelsPath: join(configDir, "models.yaml"),
     reposPath: exampleReposPath,
     repoId: "fintech-client-api",
-  });
+  };
 
-  expect(loaded.secrets.get("FINTECH_GH_TOKEN")).toBe("test-fintech-token");
+  vi.stubEnv("FINTECH_GH_TOKEN", "");
+  await expect(loadConfig(options)).rejects.toThrow(/disabled.*enabled: true/i);
+  vi.stubEnv("FINTECH_GH_TOKEN", "test-fintech-token");
+  await expect(loadConfig(options)).rejects.toThrow(/disabled.*enabled: true/i);
 });
 
 it("names missing secret variables without exposing secret values", async () => {
