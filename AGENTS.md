@@ -191,7 +191,25 @@ function canRetry(ticket: Ticket, attempt: number, maxRetries: number): boolean 
 
 ---
 
-### 4.6 Naming & Modularity
+### 4.6 Import Aliases (`@/` -> `src/`)
+
+Always use the `@/` path alias mapped to `src/` for cross-module imports in TypeScript instead of deep relative paths (`../../`). Relative imports (`./`) are only allowed for sibling files within the same folder.
+
+**Wrong (`❌`)** — Deep relative paths across modules:
+```typescript
+import { loadConfig } from "../../engine/config_loader";
+import { parseErrorSummary } from "../../self_healing/error_parser";
+```
+
+**Right (`✅`)** — Clean `@/` alias mapped to `src/`:
+```typescript
+import { loadConfig } from "@/engine/config_loader";
+import { parseErrorSummary } from "@/self_healing/error_parser";
+```
+
+---
+
+### 4.7 Naming & Modularity
 
 - **Files & Folders:** `snake_case` for shell/Python modules (`error_parser.py`, `state_manager.sh`) and YAML config keys (`max_self_heal_retries`).
 - **Functions:** Verb-first, single responsibility (`lock_ticket`, `create_worktree`, `parse_error_summary`).
