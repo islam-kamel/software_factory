@@ -10,7 +10,7 @@ For architectural details and data contracts, refer to [docs/architecture.md](do
 
 - **Purpose:** A vendor-neutral, Git-worktree-isolated AI Software Factory that turns scoped tickets into verified Draft Pull Requests across existing (brownfield) and new repositories through swappable adapters.
 - **Language / Runtime:** TypeScript 7.0 / Node.js v26.13.1 / Shell (Bash)
-- **Framework & Key Libraries:** Lightweight CLI/engine architecture (no heavy web framework); `yaml` (YAML config parsing), `zod` (runtime schema validation for configs and JSON contracts), `vitest` (unit & integration tests), `eslint` + `prettier` (linting & formatting), `gitleaks` (pre-push secret scanning)
+- **Framework & Key Libraries:** Lightweight CLI/engine architecture (no heavy web framework); `yaml@2.9.1` (YAML config parsing), `zod@4.6.7` (runtime schema validation for configs and JSON contracts), `vitest@5.1.1` (unit & integration tests), `eslint@10.15.0` + `prettier@3.10.1` (linting & formatting), `gitleaks` (pre-push secret scanning), `vite@8.3.7` (complier)
 - **Package Manager:** Yarn
 
 ---

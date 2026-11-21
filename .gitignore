@@ -7,3 +7,6 @@ config/repos.yaml
 
 # Idea Files
 .idea/
+
+# Agents
+.orchestrator/
