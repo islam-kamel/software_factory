@@ -1,0 +1,5 @@
+# Environment Protocol
+.env.*.local
+
+# Idea Files
+.idea/
