@@ -114,6 +114,8 @@ async function resumeApproved(tracker: TrackerAdapter, runFile: string) {
 
 Managed GitHub Draft PRs contain the full Reviewer report in the PR body. If PR creation has an uncertain response, the API returns `delivery_pending`, retains the active ticket claim and committed branch, and removes only its owned worktree. Resume stops before agents or GitHub requests until an operator reconciles the remote result; creation is not retried automatically. If a known Draft PR cannot be reflected in tracker state, the result retains its URL and reports a tracker warning.
 
+After a known receipt is saved and its owned worktree is cleaned up, a tracker read or ready-state update failure releases only that run's active execution while retaining the receipt and outer ticket claim. Resume with the same `runFile` reconciles `ai_reviewing` to `ai_pr_ready` or accepts an already-ready ticket, then finishes the claim without rerunning approval, agents, worktree creation, verification, commit, push, or PR creation. Other ticket states need manual reconciliation and are never overwritten; active executions remain protected, and abandoned claims or crash, persistence, or cleanup uncertainty require manual inspection rather than stale-claim takeover.
+
 ---
 
 ## Repository Structure

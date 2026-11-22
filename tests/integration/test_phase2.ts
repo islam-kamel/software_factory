@@ -5,151 +5,25 @@
 // Role    : Integration Test
 // API Doc : docs/implementation_plan.md, Phase 2 Acceptance Criteria
 // ============================================================
-import { execFileSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { access, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach, expect, it } from "vitest";
-import { createGitHubHost } from "@/adapters/git_host/github";
-import { createLocalMarkdownTracker } from "@/adapters/tracker/local_md";
-import type { AgentRequest, AgentRunner } from "@/engine/orchestrator";
-import type { FactoryConfig, ResolvedRepository } from "@/engine/config_schemas";
-import type { AgentResult, VerificationResult } from "@/engine/contracts";
+import type { AgentRunner } from "@/engine/orchestrator";
 import type { NotificationEvent, Notifier } from "@/adapters/notifier/console";
 import type { TrackerAdapter } from "@/adapters/tracker/types";
-import { planManagedTicket, resumeManagedTicket } from "@/engine/automation";
-
-const roots: string[] = [];
-
-type Fixture = {
-  root: string;
-  repositoryPath: string;
-  factoryRoot: string;
-  ticketsDirectory: string;
-  outputDirectory: string;
-  worktreeRoot: string;
-  repository: ResolvedRepository;
-  factory: FactoryConfig;
-  tracker: ReturnType<typeof createLocalMarkdownTracker>;
-};
-
-function git(cwd: string, args: string[]): string {
-  return execFileSync("git", ["-c", "core.hooksPath=/dev/null", ...args], {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "ignore"],
-  }).trim();
-}
-
-async function makeFixture(): Promise<Fixture> {
-  const root = await mkdtemp(join(tmpdir(), "factory-phase2-"));
-  roots.push(root);
-  const repositoryPath = join(root, "repository");
-  const factoryRoot = join(root, "factory");
-  const ticketsDirectory = join(factoryRoot, "tickets");
-  const outputDirectory = join(factoryRoot, "runs");
-  const worktreeRoot = join(root, "worktrees");
-  await mkdir(repositoryPath);
-  git(repositoryPath, ["init", "-b", "main"]);
-  git(repositoryPath, ["config", "user.name", "Factory Test"]);
-  git(repositoryPath, ["config", "user.email", "factory@example.invalid"]);
-  await writeFile(join(repositoryPath, "AGENTS.md"), "Repository rules\n");
-  git(repositoryPath, ["add", "AGENTS.md"]);
-  git(repositoryPath, ["commit", "-m", "base"]);
-  const remote = join(root, "origin.git");
-  git(repositoryPath, ["init", "--bare", remote]);
-  git(repositoryPath, ["remote", "add", "origin", remote]);
-  git(repositoryPath, ["push", "origin", "main"]);
-  for (const role of ["planner", "builder", "reviewer"]) {
-    const directory = join(factoryRoot, "src/agents", role);
-    await mkdir(directory, { recursive: true });
-    await writeFile(join(directory, "prompt.md"), `${role} instructions`);
-  }
-  await mkdir(ticketsDirectory, { recursive: true });
-  await writeTicket(ticketsDirectory);
-  const repository = makeRepository(repositoryPath);
-  return {
-    root,
-    repositoryPath,
-    factoryRoot,
-    ticketsDirectory,
-    outputDirectory,
-    worktreeRoot,
-    repository,
-    factory: makeFactory(worktreeRoot),
-    tracker: createLocalMarkdownTracker({ repository, ticketsDirectory }),
-  };
-}
-
-async function writeTicket(directory: string): Promise<void> {
-  await writeFile(
-    join(directory, "17.md"),
-    [
-      "---",
-      'id: "17"',
-      "project: sample",
-      "title: Managed ticket",
-      "acceptance_criteria:",
-      "  - implement behavior",
-      "state: ai_ready",
-      "author: reporter",
-      "---",
-      "Ticket description",
-      "",
-    ].join("\n"),
-  );
-}
-
-function makeRepository(localPath: string): ResolvedRepository {
-  const role = { cli: "codex", provider: "openai", model: "test" };
-  return {
-    id: "sample",
-    enabled: true,
-    visibility: "private",
-    local_path: localPath,
-    use_worktree: true,
-    base_branch: "main",
-    agents: { planner: role, builder: role, reviewer: role },
-    privacy: { allow_cloud_llm: true, ignore_paths: [".env*"] },
-    context: { mode: "repo_only", repo_files: ["AGENTS.md"] },
-    tracker: { provider: "local_md", repo: "owner/sample", allowed_approvers: ["maintainer"] },
-    verification: { secret_scan: "secret-scan", lint: "lint", typecheck: "typecheck", test: "test" },
-  };
-}
-
-function makeFactory(worktreeRoot: string): FactoryConfig {
-  return {
-    version: "1",
-    adapters: { git_host: "github", notifier: "console" },
-    limits: { max_self_heal_retries: 3, agent_timeout_minutes: 1 },
-    workspace: {
-      use_worktree: true,
-      worktree_root: worktreeRoot,
-      cleanup_on_complete: true,
-      branch_prefix: "ai/",
-      draft_pr_only: true,
-    },
-  };
-}
-
-function managedOptions(fixture: Fixture) {
-  return {
-    repository: fixture.repository,
-    factory: fixture.factory,
-    tracker: fixture.tracker,
-    factoryRoot: fixture.factoryRoot,
-  };
-}
-
-async function planFixture(fixture: Fixture, agentRunner: AgentRunner, notifier: Notifier) {
-  return planManagedTicket({
-    ...managedOptions(fixture),
-    ticketId: "17",
-    outputDirectory: fixture.outputDirectory,
-    agentRunner,
-    notifier,
-  });
-}
+import { resumeManagedTicket } from "@/engine/automation";
+import type { Fixture } from "./phase2_fixture";
+import {
+  addApproval,
+  cleanupFixtures,
+  fakeGitHubHost,
+  git,
+  makeAgentRunner,
+  makeFixture,
+  makeVerifier,
+  managedOptions,
+  planFixture,
+} from "./phase2_fixture";
 
 function failApprovalReadOnce(tracker: TrackerAdapter): TrackerAdapter {
   let failed = false;
@@ -161,17 +35,6 @@ function failApprovalReadOnce(tracker: TrackerAdapter): TrackerAdapter {
         throw new Error("synthetic tracker read failure");
       }
       return tracker.getApproval(input);
-    },
-  };
-}
-
-function failReadyUpdate(tracker: TrackerAdapter, updates: string[]): TrackerAdapter {
-  return {
-    ...tracker,
-    updateState: async (input) => {
-      updates.push(input.state);
-      if (input.state === "ai_pr_ready") throw new Error("synthetic tracker write failure");
-      await tracker.updateState(input);
     },
   };
 }
@@ -190,108 +53,7 @@ async function resumeWithoutApproval(input: {
   });
 }
 
-async function writeBuilderChange(request: AgentRequest, protectedWrite: boolean): Promise<void> {
-  const target = join(request.workspace, protectedWrite ? ".env.local" : "feature.txt");
-  await writeFile(target, protectedWrite ? "synthetic value" : "feature implementation\n");
-}
-
-function agentContent(role: AgentRequest["role"], verdict: string): string {
-  if (role === "planner") return "Approved plan";
-  if (role === "reviewer") return `**Verdict:** \`${verdict}\`\n`;
-  return "Builder completed";
-}
-
-function makeAgentRunner(verdict: string, protectedWrite = false): { runner: AgentRunner; roles: string[] } {
-  const roles: string[] = [];
-  const runner: AgentRunner = async (request: AgentRequest): Promise<AgentResult> => {
-    roles.push(request.role);
-    const filename = { planner: "PLAN.md", builder: "BUILDER_SUMMARY.md", reviewer: "REVIEW_REPORT.md" }[request.role];
-    const outputFile = join(request.outputDirectory, filename);
-    if (request.role === "builder") await writeBuilderChange(request, protectedWrite);
-    await writeFile(outputFile, agentContent(request.role, verdict));
-    return {
-      role: request.role,
-      status: "success",
-      provider_used: "test",
-      model_used: "test",
-      duration_seconds: 1,
-      tokens_used: 0,
-      estimated_cost_usd: 0,
-      output_file: outputFile,
-    };
-  };
-  return { runner, roles };
-}
-
-function fakeGitHubHost(
-  requests: Array<{ method: string; url: string; body?: string }>,
-  repositoryPath: string,
-  failCreate = false,
-) {
-  const response = (value: unknown): Response => new Response(JSON.stringify(value), { status: 200 });
-  function createPullResponse(body: string | undefined): Response {
-    const payload = JSON.parse(body ?? "{}") as { head?: string; base?: string; body?: string; draft?: boolean };
-    return response({
-      number: 41,
-      html_url: "https://github.com/owner/sample/pull/41",
-      draft: payload.draft,
-      body: payload.body,
-      head: {
-        ref: payload.head,
-        sha: git(repositoryPath, ["rev-parse", "refs/heads/ai/issue-17"]),
-        repo: { full_name: "owner/sample" },
-      },
-      base: { ref: payload.base, repo: { full_name: "owner/sample" } },
-    });
-  }
-  function apiResponse(url: string, method: string, body: string | undefined): Response {
-    if (method === "GET" && url.includes("/pulls?")) return response([]);
-    if (method === "POST" && url.endsWith("/pulls")) return createPullResponse(body);
-    throw new Error(`Unexpected mocked GitHub request: ${url}`);
-  }
-  const fetcher: typeof fetch = async (input, init) => {
-    const url = String(input);
-    const method = init?.method ?? "GET";
-    const body = typeof init?.body === "string" ? init.body : undefined;
-    requests.push({ method, url, ...(body ? { body } : {}) });
-    if (failCreate && method === "POST" && url.endsWith("/pulls")) throw new Error("synthetic connection reset");
-    return apiResponse(url, method, body);
-  };
-  return createGitHubHost({ repository: "owner/sample", token: "test-token", fetcher });
-}
-
-async function addApproval(fixture: Fixture, planHash: string): Promise<void> {
-  const path = join(fixture.ticketsDirectory, "17.md");
-  const markdown = await readFile(path, "utf8");
-  await writeFile(
-    path,
-    markdown.replace(
-      "state: needs_approval\n",
-      `state: needs_approval\nfactory_approval:\n  author: maintainer\n  command: /approve\n  plan_hash: ${planHash}\n`,
-    ),
-  );
-}
-
-function makeVerifier(calls: number[], failFirst: boolean, timeoutCalls: number[] = []) {
-  return async (options: {
-    attempt?: number;
-    workspace: string;
-    baseBranch?: string;
-    logDirectory?: string;
-    timeoutMs?: number;
-  }): Promise<VerificationResult> => {
-    calls.push(options.attempt ?? 1);
-    if (options.timeoutMs !== undefined) timeoutCalls.push(options.timeoutMs);
-    if (failFirst && calls.length === 1) {
-      return { passed: false, attempt: options.attempt ?? 1, failed_step: "lint", summary: "lint failed" };
-    }
-    return { passed: true, attempt: options.attempt ?? 1, failed_step: null, summary: "all checks passed" };
-  };
-}
-
-afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
-});
+afterEach(cleanupFixtures);
 
 it("pauses before worktree creation, repairs once, and delivers the verified Draft PR", async () => {
   const fixture = await makeFixture();
@@ -387,38 +149,6 @@ it("releases only the active execution after a tracker read failure and then res
   const result = await resumeManagedTicket(options);
   expect(result.status).toBe("pr_ready");
   expect(roles).toEqual(["planner", "builder", "reviewer"]);
-});
-
-it("returns a delivered PR when the final tracker state write fails", async () => {
-  const fixture = await makeFixture();
-  const { runner } = makeAgentRunner("APPROVE_FOR_DRAFT_PR");
-  const planned = await planFixture(fixture, runner, { notify: async () => undefined });
-  await addApproval(fixture, planned.planHash);
-  const updates: string[] = [];
-  const tracker = failReadyUpdate(fixture.tracker, updates);
-  const requests: Array<{ method: string; url: string; body?: string }> = [];
-  const result = await resumeManagedTicket({
-    ...managedOptions(fixture),
-    tracker,
-    runFile: planned.runFile,
-    agentRunner: runner,
-    verifier: makeVerifier([], false),
-    gitHost: fakeGitHubHost(requests, fixture.repositoryPath),
-    notifier: { notify: async () => undefined },
-  });
-  expect(result.status).toBe("pr_ready");
-  expect(result.url).toBe("https://github.com/owner/sample/pull/41");
-  expect(result.trackerError).toMatch(/status could not be updated/i);
-  expect(updates).not.toContain("ai_failed");
-  expect((await fixture.tracker.getTicket("17")).state).toBe("ai_reviewing");
-  expect(JSON.parse(await readFile(join(dirname(planned.runFile), "managed.json"), "utf8"))).toMatchObject({
-    delivery: { url: result.url, number: 41 },
-  });
-  const claims = join(fixture.worktreeRoot, ".claims");
-  const claimKey = (await readdir(claims))[0];
-  expect(claimKey).toBeTruthy();
-  expect(await readdir(join(claims, claimKey ?? ""))).toContain("active");
-  expect(requests).toHaveLength(2);
 });
 
 it("retains an active claim when Draft creation has an uncertain response", async () => {

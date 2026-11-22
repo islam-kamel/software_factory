@@ -166,7 +166,9 @@ flowchart TB
 - **Behavior:**
   - Commits only on the expected linked `ai/issue-<id>` worktree, rejects configured Git filters, and verifies the immutable clean commit snapshot before pushing.
   - Requires a passing verification result and configured nonempty `verification.secret_scan`. The full Reviewer report is included in the Draft PR body. An existing Draft PR is reused only when its commit and report body match the verified delivery before push.
+  - A matching existing Draft PR is returned immediately without another push or PR-creation request.
   - If the create-PR response is uncertain, returns `delivery_pending`, retains the active claim, branch, and private artifacts, cleans only the owned worktree, and requires manual reconciliation before retry. It does not automatically repeat PR creation.
+  - A saved complete Draft PR receipt can resume tracker reconciliation under a fresh active claim. It moves `ai_reviewing` to `ai_pr_ready`, accepts an already-ready ticket, and releases its own active claim after success. Tracker read or write failures release only that execution claim so a later retry can reconcile; concurrent retries cannot release another execution's claim. Normal ready notifications may repeat. This path does not rerun approval, agents, verification, or delivery. A receipt that does not match its reviewed run context is rejected, and unknown delivery remains manual recovery.
 
 ### 2.6 Notifier Adapter
 
@@ -177,12 +179,13 @@ flowchart TB
 
 ### Phase 2 Acceptance Criteria
 
-Automated acceptance uses temporary Git repositories, a local bare origin, real GitHub adapter logic with mocked HTTP, synthetic agents and trackers, and notifier mocks. The fresh Linux verification used Debian 13 ARM64, Node.js v26.13.1, Yarn 1.22.22, and Bubblewrap 0.12.0. The exact `yarn verify` command passed with 24 test files, 160 tests, and 0 skipped; build/import smoke and managed API export assertions also passed. Independent review approved the implementation. Full evidence is in the operator-held `linux/fresh-final/verification-summary.md` task artifact.
+Automated acceptance uses temporary Git repositories, a local bare origin, real GitHub adapter logic with mocked HTTP, synthetic agents and trackers, and notifier mocks. The fresh Linux verification used Debian 13 ARM64, Node.js v26.13.1, Yarn 1.22.22, and Bubblewrap 0.12.0. The exact `yarn verify` command passed with 25 test files, 162 tests, and 0 skipped; build/import smoke and managed API export assertions also passed. Independent review approved the implementation. Full evidence is retained in the operator-held PR4 fix verification artifact.
 
 - [x] Automated integration coverage confirms Builder changes stay in the isolated worktree and the source checkout remains untouched.
 - [x] Automated coverage confirms repairable verification failures recover within three total attempts and terminal failure marks `ai_failed`.
 - [x] Protected-path and secret-scan failures block delivery before push.
 - [x] A successful mocked GitHub delivery pushes the verified commit to a local bare origin, creates a Draft PR with the full Reviewer report in its body, cleans the owned worktree, and exercises notifications.
+- [x] Receipt recovery reconciles tracker failures without replaying approval, agent, verification, push, or PR-creation work; tests cover already-ready state, transient failures, concurrent ownership, and invalid run context.
 
 **Operational follow-up:** Live GitHub and Telegram factory end-to-end acceptance was not performed. Run it with authorized test credentials and a test repository before operational use.
 

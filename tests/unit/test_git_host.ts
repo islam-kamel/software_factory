@@ -225,6 +225,7 @@ it("creates a Draft PR containing the full reviewer report without posting comme
 it("reuses only an existing Draft for the exact commit and report", async () => {
   const current = await fixture();
   let pushes = 0;
+  let posts = 0;
   const push: Push = async () => {
     pushes += 1;
   };
@@ -232,6 +233,7 @@ it("reuses only an existing Draft for the exact commit and report", async () => 
   const fetcher: typeof fetch = async (input) => {
     const url = String(input);
     if (url.includes("/pulls?")) return response([pullRequest({ commit: currentCommit, body })]);
+    if (url.endsWith("/pulls")) posts += 1;
     throw new Error("unexpected request");
   };
   let currentCommit = "";
@@ -243,7 +245,8 @@ it("reuses only an existing Draft for the exact commit and report", async () => 
       input,
     );
     expect(result).toEqual({ url: "https://github.com/owner/sample/pull/42", number: 42, commit: input.commit });
-    expect(pushes).toBe(1);
+    expect(pushes).toBe(0);
+    expect(posts).toBe(0);
     expect(body).toContain(input.review);
   } finally {
     await rm(current.root, { recursive: true, force: true });

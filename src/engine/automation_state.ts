@@ -151,7 +151,8 @@ function matchesManagedRun(input: {
     state.repositoryId === options.repository.id,
     state.repositoryPath === roots.repositoryPath,
     state.workspace === roots.repositoryPath,
-    state.phase === "needs_approval" || (state.phase === "reviewed" && record.delivery?.status === "unknown"),
+    (state.phase === "needs_approval" && record.delivery === undefined) ||
+      (state.phase === "reviewed" && ["unknown", "complete"].includes(record.delivery?.status ?? "")),
   ].every(Boolean);
   return matchesRecord && matchesClaim && matchesState;
 }

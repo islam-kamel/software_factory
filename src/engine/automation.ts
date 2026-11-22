@@ -367,6 +367,17 @@ async function updateReadyState(tracker: TrackerAdapter, ticketId: string): Prom
   }
 }
 
+async function reconcileReadyState(tracker: TrackerAdapter, ticketId: string): Promise<string | undefined> {
+  try {
+    const ticket = await tracker.getTicket(ticketId);
+    if (ticket.state === "ai_pr_ready") return undefined;
+    if (ticket.state !== "ai_reviewing") return "Draft PR was delivered; ticket status needs manual recovery";
+    return await updateReadyState(tracker, ticketId);
+  } catch {
+    return "Draft PR was delivered but ticket status could not be read or updated";
+  }
+}
+
 async function releaseDeliveredClaim(claim: ActiveTicketClaim): Promise<string | undefined> {
   try {
     await finishTicketClaim(claim);
@@ -387,7 +398,7 @@ async function finalizeDraftReady(input: {
   deliveryPersisted: boolean;
 }): Promise<ManagedResult> {
   const { options, claim, workspace, ticketId, planHash, runFile, receipt, deliveryPersisted } = input;
-  const trackerError = deliveryPersisted ? await updateReadyState(options.tracker, ticketId) : undefined;
+  const trackerError = deliveryPersisted ? await reconcileReadyState(options.tracker, ticketId) : undefined;
   const notificationError = await notify(
     options,
     notificationEvent({ state: "ai_pr_ready", repository: options.repository, ticketId, url: receipt.url }),
@@ -395,7 +406,13 @@ async function finalizeDraftReady(input: {
   const cleanupError = await cleanWorkspace(workspace);
   let lifecycleError: string | undefined;
   if (!deliveryPersisted) lifecycleError = "Draft PR was delivered but its receipt could not be saved";
-  else if (!trackerError && !cleanupError) lifecycleError = await releaseDeliveredClaim(claim);
+  else if (!cleanupError && trackerError) {
+    try {
+      await leaveTicketClaim(claim);
+    } catch {
+      lifecycleError = "Draft PR is ready but the active execution could not be released";
+    }
+  } else if (!trackerError && !cleanupError) lifecycleError = await releaseDeliveredClaim(claim);
   return draftReadyResult({
     ticketId,
     planHash,
@@ -610,6 +627,28 @@ async function resumeApprovedRun(input: {
   }
 }
 
+async function resumeCompletedReceipt(input: {
+  options: ResumeManagedTicketOptions;
+  active: ActiveTicketClaim;
+  runFile: string;
+  record: ManagedRecord;
+}): Promise<ManagedResult> {
+  const { options, active, runFile, record } = input;
+  if (!record.delivery?.url || !record.delivery.number) {
+    await leaveTicketClaim(active);
+    throw new Error("Managed Draft PR receipt is incomplete");
+  }
+  return finalizeDraftReady({
+    options,
+    claim: active,
+    workspace: undefined,
+    ticketId: record.ticketId,
+    planHash: record.planHash,
+    runFile,
+    receipt: { url: record.delivery.url, number: record.delivery.number, commit: record.delivery.commit },
+    deliveryPersisted: true,
+  });
+}
 export async function resumeManagedTicket(options: ResumeManagedTicketOptions): Promise<ManagedResult> {
   const roots = await configuredRoots(options);
   const { runFile, record } = await validateManagedRun({ options, roots, loadState: getRunState });
@@ -622,6 +661,9 @@ export async function resumeManagedTicket(options: ResumeManagedTicketOptions): 
     });
   }
   const active = await enterTicketClaim(record.claim);
+  if (record.delivery?.status === "complete") {
+    return resumeCompletedReceipt({ options, active, runFile, record });
+  }
   let ticket: Ticket;
   let approval: Awaited<ReturnType<TrackerAdapter["getApproval"]>>;
   try {

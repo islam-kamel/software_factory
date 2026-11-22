@@ -311,16 +311,14 @@ export function createGitHubHost(options: {
         commit: input.commit,
         expectedBody: pullRequestBody(input),
       });
-      if (pull) receiptFor(pull, `${parts.owner}/${parts.name}`, input.commit);
+      if (pull) return receiptFor(pull, `${parts.owner}/${parts.name}`, input.commit);
       await push({ workspace: input.workspace, branch: input.branch, commit: input.commit });
-      const deliveredPull =
-        pull ??
-        (await createPullRequest({
-          fetcher,
-          token: options.token,
-          repository: `${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.name)}`,
-          request: input,
-        }));
+      const deliveredPull = await createPullRequest({
+        fetcher,
+        token: options.token,
+        repository: `${encodeURIComponent(parts.owner)}/${encodeURIComponent(parts.name)}`,
+        request: input,
+      });
       return receiptFor(deliveredPull, `${parts.owner}/${parts.name}`, input.commit);
     },
   };
