@@ -153,26 +153,25 @@ function readSecret(name: string): string {
   return value;
 }
 
-function resolveSecrets(
-  repositories: ResolvedRepository[],
-  models: ModelsConfig,
-  repoId: string | undefined,
-): Map<string, string> {
+function resolveSecrets(repositories: ResolvedRepository[], repoId: string | undefined): Map<string, string> {
   const secrets = new Map<string, string>();
   for (const repo of repositories.filter((item) => item.enabled)) {
-    if (repoId !== undefined && repo.id !== repoId) continue;
-    const tokenEnv = repo.tracker.token_env;
-    if (repo.tracker.provider !== "local_md" && !tokenEnv) {
-      throw new Error(`repos.${repo.id}.tracker.token_env is required`);
-    }
-    if (tokenEnv) secrets.set(tokenEnv, readSecret(tokenEnv));
-
-    for (const role of ["planner", "builder", "reviewer"] as const) {
-      const provider = models.providers[repo.agents[role].provider];
-      if (provider?.api_key_env) secrets.set(provider.api_key_env, readSecret(provider.api_key_env));
-    }
+    if (!matchesRepository(repo, repoId)) continue;
+    addTrackerSecret(repo, secrets);
   }
   return secrets;
+}
+
+function matchesRepository(repo: ResolvedRepository, repoId: string | undefined): boolean {
+  return repoId === undefined || repo.id === repoId;
+}
+
+function addTrackerSecret(repo: ResolvedRepository, secrets: Map<string, string>): void {
+  const tokenEnv = repo.tracker.token_env;
+  if (repo.tracker.provider !== "local_md" && !tokenEnv) {
+    throw new Error(`repos.${repo.id}.tracker.token_env is required`);
+  }
+  if (tokenEnv) secrets.set(tokenEnv, readSecret(tokenEnv));
 }
 
 function assertRepositorySelection(repositories: ResolvedRepository[], repoId: string | undefined): void {
@@ -194,7 +193,7 @@ export async function loadConfig(options: LoadConfigOptions): Promise<LoadedConf
   );
   assertRepositoryPrivacy(repositories, models);
   assertRepositorySelection(repositories, options.repoId);
-  const secrets = resolveSecrets(repositories, models, options.repoId);
+  const secrets = resolveSecrets(repositories, options.repoId);
 
   return {
     config: { factory, models, defaults: repositoriesConfig.defaults, repos: repositories },

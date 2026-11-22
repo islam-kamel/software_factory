@@ -20,6 +20,7 @@ export type CliRequest = {
   contextMode: ContextMode;
   scratchDirectory?: string;
   apiKey?: string;
+  egressConfigPath?: string;
 };
 
 export type CliInvocation = {

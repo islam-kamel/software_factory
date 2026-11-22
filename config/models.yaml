@@ -1,6 +1,7 @@
 # config/models.yaml
-# Vendor-neutral provider registry and role-to-model assignments.
-# Never store raw API keys here — reference environment variable names via `api_key_env`.
+# Provider registry metadata and role-to-model assignments.
+# `api_key_env` names proxy-owned credentials; the factory loader never resolves provider keys.
+# `auth_mode: "cli"` is metadata only; real agents use OpenCode through the approved proxy.
 
 version: "1.0"
 

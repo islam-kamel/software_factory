@@ -22,6 +22,27 @@ async function readSandboxPath(options: Parameters<typeof runSandboxed>[2], path
   return runSandboxed("node", ["-e", READ_FILE, path], options);
 }
 
+async function createRuntimeProfile() {
+  const architecture = process.arch;
+  if (architecture !== "arm64" && architecture !== "x64") {
+    throw new Error(`Unsupported architecture for Git sandbox fixture: ${architecture}`);
+  }
+
+  const examplePath = resolve(process.cwd(), "config/runtime-profile.example.yaml");
+  let profile = await readFile(examplePath, "utf8");
+  if (architecture === "x64") {
+    profile = profile
+      .replaceAll("/lib/aarch64-linux-gnu/", "/lib/x86_64-linux-gnu/")
+      .replaceAll("/lib/ld-linux-aarch64.so.1", "/lib64/ld-linux-x86-64.so.2");
+  }
+  profile = profile.replace("source: /usr/local/bin/node", `source: ${JSON.stringify(process.execPath)}`);
+  const directory = await mkdtemp(join(tmpdir(), "factory-sandbox-git-profile-"));
+  roots.push(directory);
+  const path = join(directory, "runtime-profile.yaml");
+  await writeFile(path, profile);
+  return loadSandboxRuntimeProfile(path);
+}
+
 function git(cwd: string, args: string[], env: NodeJS.ProcessEnv = {}): Promise<string> {
   return new Promise((resolveOutput, reject) => {
     execFile("git", args, { cwd, env: { ...process.env, ...env }, encoding: "utf8" }, (error, stdout) => {
@@ -139,7 +160,7 @@ it("rejects object-store symlinks and index paths outside the worktree", async (
 
 it.skipIf(process.platform !== "linux")("runs linked-worktree status and diff in Bubblewrap", async () => {
   const fixture = await repository(true);
-  const runtimeProfile = await loadSandboxRuntimeProfile(resolve(process.cwd(), "config/runtime-profile.example.yaml"));
+  const runtimeProfile = await createRuntimeProfile();
   const options = {
     ...fixture,
     runtimeProfile,
@@ -158,7 +179,7 @@ it.skipIf(process.platform !== "linux")("runs linked-worktree status and diff in
 
 it.skipIf(process.platform !== "linux")("denies history reads for ignored and blocked workspace files", async () => {
   const fixture = await repository(true, true);
-  const runtimeProfile = await loadSandboxRuntimeProfile(resolve(process.cwd(), "config/runtime-profile.example.yaml"));
+  const runtimeProfile = await createRuntimeProfile();
   const baseOptions = {
     ...fixture,
     runtimeProfile,
@@ -192,9 +213,7 @@ it.skipIf(process.platform !== "linux")(
     await mkdir(join(fixture.commonDirectory, "hooks"), { recursive: true });
     await writeFile(join(fixture.commonDirectory, "hooks/pre-commit"), "synthetic private hook body\n");
     await git(fixture.repository, ["worktree", "add", "-q", "-b", "ai/other", otherWorkspace]);
-    const runtimeProfile = await loadSandboxRuntimeProfile(
-      resolve(process.cwd(), "config/runtime-profile.example.yaml"),
-    );
+    const runtimeProfile = await createRuntimeProfile();
     const options = {
       ...fixture,
       runtimeProfile,

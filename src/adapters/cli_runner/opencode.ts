@@ -9,24 +9,21 @@ import { count, getRecord, parseJsonLines, price } from "@/adapters/cli_runner/e
 import { cliEnvironment, type CliInvocation, type CliRequest, type CliUsage } from "@/adapters/cli_runner/types";
 
 export function createOpenCodeInvocation(request: CliRequest): CliInvocation {
-  const args = [
-    "run",
-    "--dir",
-    request.workspace,
-    "--format",
-    "json",
-    "--model",
-    `${request.provider}/${request.model}`,
-    request.prompt,
-  ];
+  if (request.egressConfigPath && request.apiKey) {
+    throw new Error("OpenCode egress mode cannot receive a provider API key");
+  }
+  const args = ["run", "--format", "json", "--model", `${request.provider}/${request.model}`, request.prompt];
   const configDir = request.scratchDirectory ? `${request.scratchDirectory}/opencode-config` : undefined;
+  const configEnv: NodeJS.ProcessEnv = {};
+  if (request.egressConfigPath) configEnv.OPENCODE_CONFIG = request.egressConfigPath;
+  else if (configDir) configEnv.OPENCODE_CONFIG_DIR = configDir;
   return {
     command: "opencode",
     args,
     cwd: request.workspace,
     env: cliEnvironment(request, "OPENCODE_API_KEY", {
       OPENCODE_DISABLE_PROJECT_CONFIG: "1",
-      ...(configDir ? { OPENCODE_CONFIG_DIR: configDir } : {}),
+      ...configEnv,
     }),
   };
 }

@@ -11,11 +11,12 @@ Before connecting a repository, make sure you have:
 - **Git 2.20+** (with `git worktree` support)
 - **Linux with Bubblewrap (`bwrap`) and working user namespaces** for isolated child processes
 - **A private runtime profile** at `config/runtime-profile.yaml`; child commands run only with explicitly mounted files
-- **At least one supported CLI** installed and authenticated: OpenCode, Agy, or Codex
+- **OpenCode** installed in the private runtime profile; current Planner, Builder, and Reviewer runs require OpenCode through the approved egress proxy
+- **The egress proxy** running with its owner-only public and local Unix sockets before starting an agent
 - **A dedicated unprivileged Linux service account**; the sandbox uses a fresh `/home/factory`, not the host home
 - **A GitHub token** only when using the GitHub tracker; Local Markdown supports offline use
 - **Secret scanner (recommended):** `gitleaks` or `trufflehog` installed locally for `verification.secret_scan`
-- **Local LLM runtime (optional):** `ollama` (for confidential/NDA repos with `allow_cloud_llm: false`)
+- **Local LLM runtime (optional):** `ollama`, routed through the local-only proxy socket
 
 ---
 
@@ -29,7 +30,8 @@ Copy the template and add only the credentials you need:
 cp .env.example .env
 ```
 
-- Store LLM keys (`OPENROUTER_API_KEY`, `OPENCODE_API_KEY`), Git tokens (`GITHUB_TOKEN` or per-client tokens like `FINTECH_GH_TOKEN`), and optional notifier tokens (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) in `.env`.
+- Store Git tokens (`GITHUB_TOKEN` or per-client tokens like `FINTECH_GH_TOKEN`) and optional notifier tokens (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`) in the factory runtime environment.
+- Store upstream LLM keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`) in the Compose environment used to start the egress proxy. The factory does not resolve or pass these keys to agents.
 - `.env` is gitignored—never commit secrets or paste raw tokens into YAML files.
 
 ### Step 2: Select Active Adapters & Limits (`config/factory.yaml`)
@@ -38,7 +40,7 @@ Open [config/factory.yaml](config/factory.yaml) and choose your active adapters:
 
 - `adapters.tracker`: `github` | `gitlab` | `jira` | `local_md`
 - `adapters.git_host`: `github` | `gitlab` | `bitbucket` | `local_git`
-- `adapters.cli_runner`: `opencode` | `agy` | `codex`
+- `adapters.cli_runner`: the current agent entry point supports `opencode` only
 - `adapters.notifier`: `telegram` | `discord` | `slack` | `console` | `none`
 
 Keep `security.require_human_approval: true`, `security.require_secret_scan: true`, and `security.fail_closed_on_cloud_violation: true` enabled.
@@ -51,19 +53,7 @@ Open [config/models.yaml](config/models.yaml) to configure which provider and mo
 - **Builder:** Fast, cost-effective coding model (e.g., `glm-5.3` via OpenCode Go)
 - **Reviewer:** High-precision audit model (e.g., `anthropic/claude-opus` or a local `ollama-local` model)
 
-The native CLI providers `antigravity` (Agy) and `openai` (Codex) use `auth_mode: "cli"` and `is_local: false`. The sandbox does not inherit host CLI login: provide only the required auth material as explicit file mounts under its fresh home, then validate that login works inside the profile-backed runtime. Configured API-key routes receive only their selected environment variables where the runner supports them. OpenCode remains the default route. To use Agy for Planner, override its route in `config/models.yaml`:
-
-```yaml
-roles:
-  planner:
-    cli: "agy"
-    provider: "antigravity"
-    model: "your-logged-in-model"
-    access: "read_only"
-    temperature: 0.2
-```
-
-For Codex, set `cli: "codex"` and `provider: "openai"`. These are cloud routes and fail closed when `privacy.allow_cloud_llm: false`.
+Configure each role with an OpenCode route supported by the egress proxy: OpenRouter, OpenAI, OpenCode Go, or the OpenAI-compatible Ollama endpoint. Local Ollama uses the local-only socket; cloud routes use the public socket only when repository privacy permits them. Agy and Codex adapters are not supported by the current agent entry point; selecting either causes the run to fail closed. Do not configure native CLI cached authentication as a workaround.
 
 ### Step 4: Review Global Factory Rules
 
@@ -107,32 +97,20 @@ directories; directory mounts are limited to selected package roots. Every comma
 mounted file. The profile and its sources must remain outside the target worktree and scratch directory.
 
 The sandbox creates a fresh `/home/factory` and derives `PATH` from mounted command targets. Host `HOME`,
-shell startup files, Git global/system configuration, and hooks are not inherited. The example profile does
-not configure native CLI cached authentication. On Linux, authenticate Agy with `agy acp --login`, then add
-these two exact read-only file mounts to the existing profile. Use paths under the authenticated account's
-Agy home; never mount the whole home directory or put auth values in YAML.
-
-```yaml
-mounts:
-  - source: /path/to/agy-home/.gemini/antigravity-cli/antigravity-oauth-token
-    target: /home/factory/.gemini/antigravity-cli/antigravity-oauth-token
-  - source: /path/to/agy-home/.gemini/antigravity-cli/cache/acp-auth-state.json
-    target: /home/factory/.gemini/antigravity-cli/cache/acp-auth-state.json
-```
-
-The file-backed login was verified with Agy 1.5.14 in the profile-backed Linux lifecycle below. The files must
-be canonical regular files outside the repository and scratch directories. This does not verify SecretService,
-keyring, other CLI versions, or persistent credential refresh. Only selected provider API-key variables and
-OpenCode flags are passed through.
+shell startup files, Git global/system configuration, hooks, provider credentials, and native CLI login state
+are not inherited. The profile must include OpenCode, Node.js for the trusted loopback bridge, and their exact
+runtime libraries. Provider credentials are read by the proxy container; agent processes receive neither
+provider keys nor host login data.
 
 Git metadata is mounted only when `privacy.ignore_paths` is empty and no configured blocked path resolves
 inside the workspace. Protected runs receive no Git metadata, so repository-aware Git commands cannot read
 repository state; the Engine supplies scoped context and diff instead. Unprotected runs get only a scratch Git snapshot and
 read-only objects, refs, and packed refs. Repository config, hooks, alternates, and other worktree metadata
 are not exposed. Do not mount broad system directories or assume host configuration is visible.
-Profile-backed Linux sandbox checks and a complete real Agy lifecycle passed on Debian 13 ARM64 with Node.js
-26.13.1 and Bubblewrap 0.12. The lifecycle used a synthetic repository and hash-bound synthetic local approval;
-it did not create a PR or test a real operator's approval flow. Codex and OpenCode were not live-tested.
+Earlier profile-backed sandbox checks and an Agy lifecycle passed on Debian 13 ARM64 with Node.js 26.13.1 and
+Bubblewrap 0.12. That historical lifecycle predates mandatory proxy enforcement and does not establish Agy as
+a supported current agent route. Current acceptance uses OpenCode with a synthetic upstream; it does not test
+live provider credentials or production deployment.
 
 ### Approval and current Phase 1 boundary
 
@@ -164,7 +142,7 @@ verification:
 Match each repository's sensitivity level:
 
 - **Standard private repo:** Use `defaults` (OpenRouter / OpenCode Go with zero-data-retention settings enabled in your provider dashboard).
-- **Client / NDA repo:** Override `agents.builder` with `github-copilot` (`copilot-cli`) or a zero-retention provider, and list sensitive paths in `privacy.ignore_paths`.
+- **Client / NDA repo:** Keep the approved OpenCode route from `config/models.yaml`, choose a supported provider that meets your organization's requirements, and list sensitive paths in `privacy.ignore_paths`.
 - **Confidential repo (no code leaves your machine):** Set `privacy.data_classification: "confidential"`, `privacy.allow_cloud_llm: false`, and override all three roles to `ollama-local`. The engine fails closed if any cloud provider is configured.
 
 ### Step 5: Protect Your Base Branches
@@ -181,6 +159,53 @@ For GitHub tracker discovery, create the `ai-ready` label. Tracker polling is no
 `ai-ready`
 
 ---
+
+## Phase 3 Egress Proxy and Resource Limits
+
+Every real agent run requires the NGINX egress proxy. Agent processes receive a synthetic OpenCode credential,
+never a provider key, and run with an unshared network namespace. The trusted loopback bridge exposes only the
+Unix socket selected from provider locality and repository privacy. Local Ollama always uses the local socket;
+cloud providers use the public socket only when repository privacy permits them. Missing, disabled,
+unsupported, or unavailable proxy configuration rejects the run before output or scratch artifacts are created.
+There is no direct-network or native-auth fallback.
+
+Create the host socket directory for the dedicated factory account with owner-only access. Set the UID and
+GID to that account when starting Compose, and keep `FACTORY_EGRESS_SOCKET_DIR` aligned with the absolute
+socket paths in `config/factory.yaml`:
+
+```bash
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 /run/software-factory/egress
+export SOCKET_UID="$(id -u)" SOCKET_GID="$(id -g)"
+docker compose -f infra/docker-compose.yml config --quiet
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+```
+
+The proxy publishes no TCP ports. For a local Ollama container, attach it to the Compose network with the
+required DNS alias:
+
+```bash
+docker network connect --alias ollama software-factory-egress <ollama-container>
+```
+
+The shipped `config/factory.yaml` enables the proxy. Start the proxy before running an agent; setting
+`egress_proxy.enabled: false`, omitting the proxy configuration, or leaving its socket unavailable blocks
+agent execution. Configure the repository's privacy policy normally. Cloud credentials are needed only for
+the providers in use; missing cloud keys produce HTTP 503. API keys accept only letters, digits, dots,
+underscores, and hyphens so they cannot alter rendered NGINX configuration. The socket files are owner-only;
+keep their parent directory private and remove stale socket files only after confirming no proxy container is
+using them. Never expose the directory to untrusted host users.
+
+The default process limits are `cpu_quota_percent: 100`, `memory_mb: 2048`, and `max_pids: 256`. Execution
+requires Linux systemd user scopes with delegated cgroup v2 CPU, memory, and PID controllers. The factory
+fails closed if the scope cannot be created. The runtime must support `systemd-run --expand-environment=no`;
+the scope smoke test used systemd 259. Each scope sets `MemorySwapMax=0` so processes cannot move memory
+above the configured limit into swap. CPU quota throttles sustained work; the configured timeout terminates
+long-running CPU loops. Verifier dependencies must already be installed because its Bubblewrap network
+namespace has no external network access.
+
+Run the deterministic NGINX policy check with `infra/self_check.py`. It uses an internal Docker network,
+synthetic credentials, and local fake upstreams; it does not make provider requests. Live provider
+acceptance is a separate operator check.
 
 ## 4. Choosing a Deployment Mode
 
@@ -263,13 +288,13 @@ Claims are filesystem-scoped to the canonical configured worktree root and coord
 
 Managed worktrees use branch `ai/issue-<id>` from the configured base ref, including protected base branches as read-only starting points. Cleanup verifies the private ownership record and linked-worktree identity before removal. If ownership cannot be proven or cleanup fails, the run retains its worktree and reports a cleanup error for inspection. Git commit delivery refuses repositories with configured Git filters because executing arbitrary filters during staging is outside the supported safety boundary; review the repository's filter setup before enabling managed delivery.
 
-Phase 2 unit tests use synthetic local Git repositories and mocked HTTP. They do not establish live GitHub, Telegram, or complete managed Linux runtime acceptance. Phase 3 offline verification, network proxying, and sandbox resource caps remain deferred.
+Phase 2 unit tests use synthetic local Git repositories and mocked HTTP. They do not establish live GitHub or Telegram acceptance. The original Phase 3 baseline passed Linux verification; the mandatory-proxy security correction is in progress and awaits full verification. Live provider credentials and production deployment remain untested.
 
 ---
 
 ## 6. Troubleshooting & Guardrails
 
 - **Ticket marked `ai_failed`:** The managed retry limit was reached or a hard verification gate failed. `limits.max_self_heal_retries` is the total number of verification attempts (default `3`), so there can be at most two repair Builder runs. Inspect the bounded summary and the private `verification-logs` under the external run-artifact directory; do not copy raw logs into prompts or notifications.
-- **Engine refuses to start on a confidential repo:** Verify `privacy.allow_cloud_llm: false` is paired only with providers marked `is_local: true` in `config/models.yaml` (fail-closed behavior).
+- **Engine refuses to start on a confidential repo:** Verify `egress_proxy.enabled: true`, that the proxy and local socket are ready, and that each role uses the supported local Ollama route. A cloud provider remains blocked when `privacy.allow_cloud_llm: false`.
 - **Secret scan failure:** A secret or credential pattern was detected by `verification.secret_scan`. Remove the secret from the diff/test fixture before re-running.
 - **Avoid duplicate `AGENTS.md` context:** The context builder includes the selected root instruction inline once and runners disable CLI project auto-loading. Other repo instruction files are passed as safe path pointers; ignored paths are not read.

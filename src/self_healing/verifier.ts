@@ -17,6 +17,7 @@ import { isIgnoredPath } from "@/engine/context_builder";
 import type { ResolvedRepository } from "@/engine/config_schemas";
 import type { VerificationResult } from "@/engine/contracts";
 import { parseErrorSummary } from "@/self_healing/error_parser";
+import { DEFAULT_RESOURCE_LIMITS, type ResourceLimits } from "@/engine/config_schemas";
 
 export type CheckStep = "secret_scan" | "lint" | "typecheck" | "test";
 export type CheckRunnerOptions = {
@@ -26,6 +27,7 @@ export type CheckRunnerOptions = {
   timeoutMs: number;
   scratchDirectory: string;
   runtimeProfile?: SandboxRuntimeProfile;
+  resourceLimits?: ResourceLimits;
 };
 export type CheckRunner = (step: CheckStep, command: string, options: CheckRunnerOptions) => Promise<SandboxResult>;
 
@@ -35,6 +37,7 @@ export type VerifyOptions = {
   attempt?: number;
   timeoutMs?: number;
   runtimeProfile?: SandboxRuntimeProfile;
+  resourceLimits?: ResourceLimits;
   baseBranch?: string;
   logDirectory?: string;
 };
@@ -54,6 +57,8 @@ async function runCheck(step: CheckStep, command: string, options: CheckRunnerOp
     timeoutMs: options.timeoutMs,
     scratchDirectory: options.scratchDirectory,
     runtimeProfile,
+    resourceLimits: options.resourceLimits ?? DEFAULT_RESOURCE_LIMITS,
+    offline: true,
   });
 }
 
@@ -307,19 +312,12 @@ async function runSteps(input: {
   scratchDirectory: string;
   runtimeProfile: SandboxRuntimeProfile | undefined;
 }): Promise<VerificationResult> {
-  const { runner, options, steps, attempt, timeoutMs, scratchDirectory, runtimeProfile } = input;
+  const { runner, options, steps, attempt } = input;
   for (const { step, command } of steps) {
     if (command.trim().length === 0) return failedResult(attempt, step, "Configured command is empty");
     let result: SandboxResult;
     try {
-      result = await runner(step, command, {
-        repository: options.repository.local_path,
-        workspace: options.workspace,
-        ignorePaths: options.repository.privacy.ignore_paths ?? [],
-        timeoutMs,
-        scratchDirectory,
-        ...(runtimeProfile ? { runtimeProfile } : {}),
-      });
+      result = await runner(step, command, createCheckSandboxOptions(input));
     } catch {
       return failedCheckResult({ options, attempt, step, output: "", summary: "Unable to start verification command" });
     }
@@ -341,4 +339,22 @@ async function runSteps(input: {
   const finalProtectionFailure = await protectedFailure(options, attempt);
   if (finalProtectionFailure) return finalProtectionFailure;
   return { passed: true, attempt, failed_step: null, summary: `Passed ${steps.length} verification steps` };
+}
+
+function createCheckSandboxOptions(input: {
+  options: VerifyOptions;
+  timeoutMs: number;
+  scratchDirectory: string;
+  runtimeProfile: SandboxRuntimeProfile | undefined;
+}): CheckRunnerOptions {
+  const { options, timeoutMs, scratchDirectory, runtimeProfile } = input;
+  return {
+    repository: options.repository.local_path,
+    workspace: options.workspace,
+    ignorePaths: options.repository.privacy.ignore_paths ?? [],
+    timeoutMs,
+    scratchDirectory,
+    ...(runtimeProfile ? { runtimeProfile } : {}),
+    ...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
+  };
 }

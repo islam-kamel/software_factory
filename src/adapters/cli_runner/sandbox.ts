@@ -6,8 +6,10 @@
 // API Doc : https://github.com/containers/bubblewrap
 // ============================================================
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { lstat, readdir, realpath, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { EGRESS_BRIDGE_SCRIPT } from "@/adapters/llm/egress_proxy";
 import { isIgnoredPath } from "@/engine/context_builder";
 import {
   assertRuntimeMountsOutside,
@@ -15,6 +17,13 @@ import {
   type SandboxRuntimeProfile,
 } from "@/adapters/cli_runner/runtime_profile";
 import { prepareSandboxGit } from "@/adapters/cli_runner/sandbox_git";
+import {
+  createSystemdScopeArgs,
+  stopSystemdScope,
+  systemdControlEnvironment,
+  SYSTEMD_RUN_EXECUTABLE,
+} from "@/adapters/cli_runner/resource_scope";
+import type { ResourceLimits } from "@/engine/config_schemas";
 
 export type SandboxOptions = {
   workspace: string;
@@ -23,6 +32,9 @@ export type SandboxOptions = {
   timeoutMs: number;
   scratchDirectory: string;
   runtimeProfile: SandboxRuntimeProfile;
+  offline?: boolean;
+  resourceLimits?: ResourceLimits;
+  egressSocket?: string;
   repository?: string;
   blockedPaths?: string[];
   env?: NodeJS.ProcessEnv;
@@ -123,15 +135,36 @@ type BwrapRequest = {
 
 export function createBwrapArgs(request: BwrapRequest): string[] {
   const { command, args, options, workspace, hidden, runtimeProfile, gitMounts = [] } = request;
-  const scratch = options.scratchDirectory;
   const resolvedCommand = resolveRuntimeCommand(runtimeProfile, command);
-  const result = [
+  const runtimeCommand = options.egressSocket ? resolveRuntimeCommand(runtimeProfile, "node") : undefined;
+  const result = createBwrapBaseArgs(options);
+  addRuntimeMounts(result, runtimeProfile.mounts);
+  addRuntimeMounts(result, gitMounts);
+  result.push("--ro-bind", workspace, workspace);
+  if (options.access === "workspace_write") result.push("--bind", workspace, workspace);
+  addHiddenPaths(result, hidden);
+  addSandboxCommand(result, { runtimeCommand, resolvedCommand, args });
+  return result;
+}
+
+function createBwrapBaseArgs(options: SandboxOptions): string[] {
+  const scratch = options.scratchDirectory;
+  return [
     "--die-with-parent",
     "--new-session",
     "--unshare-user",
     "--unshare-pid",
     "--unshare-ipc",
     "--unshare-uts",
+    ...(options.offline ? ["--unshare-net"] : []),
+    ...(options.egressSocket ? ["--dir", "/run", "--dir", "/run/factory"] : []),
+    ...(options.egressSocket ? ["--ro-bind", options.egressSocket, "/run/factory/egress.sock"] : []),
+    "--unsetenv",
+    "XDG_RUNTIME_DIR",
+    "--unsetenv",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "--unsetenv",
+    "SYSTEMD_BUS_ADDRESS",
     "--cap-drop",
     "ALL",
     "--dev",
@@ -148,16 +181,38 @@ export function createBwrapArgs(request: BwrapRequest): string[] {
     scratch,
     scratch,
   ];
-  for (const mount of runtimeProfile.mounts) result.push("--ro-bind", mount.source, mount.target);
-  for (const mount of gitMounts) result.push("--ro-bind", mount.source, mount.target);
-  result.push("--ro-bind", workspace, workspace);
-  if (options.access === "workspace_write") result.push("--bind", workspace, workspace);
+}
+
+function addRuntimeMounts(result: string[], mounts: Array<{ source: string; target: string }>): void {
+  for (const mount of mounts) result.push("--ro-bind", mount.source, mount.target);
+}
+
+function addHiddenPaths(result: string[], hidden: HiddenPath[]): void {
   for (const entry of hidden) {
     if (entry.isDirectory) result.push("--tmpfs", entry.path, "--remount-ro", entry.path);
     else result.push("--ro-bind", "/dev/null", entry.path);
   }
+}
+
+function addSandboxCommand(
+  result: string[],
+  input: { runtimeCommand: string | undefined; resolvedCommand: string; args: string[] },
+): void {
+  const { runtimeCommand, resolvedCommand, args } = input;
+  if (runtimeCommand) {
+    result.push(
+      "--",
+      runtimeCommand,
+      "--input-type=commonjs",
+      "--eval",
+      EGRESS_BRIDGE_SCRIPT,
+      "--",
+      resolvedCommand,
+      ...args,
+    );
+    return;
+  }
   result.push("--", resolvedCommand, ...args);
-  return result;
 }
 
 function appendOutput(current: string, chunk: Buffer): { value: string; overflow: boolean } {
@@ -172,6 +227,7 @@ const forwardedEnvironment = new Set([
   "OPENCODE_API_KEY",
   "OPENCODE_DISABLE_PROJECT_CONFIG",
   "OPENCODE_CONFIG_DIR",
+  "OPENCODE_CONFIG",
 ]);
 
 function safeEnvironment(options: SandboxOptions): NodeJS.ProcessEnv {
@@ -190,6 +246,7 @@ function safeEnvironment(options: SandboxOptions): NodeJS.ProcessEnv {
     GIT_CONFIG_VALUE_0: "/dev/null",
   };
   for (const [key, value] of Object.entries(options.env ?? {})) {
+    if (options.egressSocket && /(?:API_KEY|TOKEN|SECRET)/i.test(key)) continue;
     if (forwardedEnvironment.has(key) && value !== undefined) environment[key] = value;
   }
   return environment;
@@ -236,12 +293,34 @@ function assertScratchBoundary(workspace: string, scratch: string): void {
   if (!isInside("/tmp", scratch)) throw new Error("Agent scratch must be under /tmp for isolated execution");
 }
 
+async function assertEgressSocket(options: SandboxOptions, workspace: string, scratch: string): Promise<void> {
+  if (!options.egressSocket) return;
+  const socket = options.egressSocket;
+  if (!isAbsolute(socket) || socket.length > 100 || isInside(workspace, socket) || isInside(scratch, socket)) {
+    throw new Error("Invalid egress proxy socket path");
+  }
+  const parent = await realpath(dirname(socket));
+  if (resolve(parent, basename(socket)) !== socket) throw new Error("Egress proxy socket path cannot use symlinks");
+  const info = await lstat(socket);
+  if (info.isSymbolicLink() || !info.isSocket()) throw new Error("Egress proxy path must be a Unix socket");
+  if (!options.offline) throw new Error("Egress proxy sandboxes must disable network access");
+}
+
 type ProcessOptions = {
   command: string;
   args: string[];
   cwd: string;
   env: NodeJS.ProcessEnv;
+  controlEnv?: NodeJS.ProcessEnv;
+  scopeName?: string;
   timeoutMs: number;
+};
+
+type SandboxContext = {
+  workspace: string;
+  options: SandboxOptions;
+  hidden: HiddenPath[];
+  gitData?: Awaited<ReturnType<typeof gitSnapshot>>;
 };
 
 type ProcessState = SandboxResult & { settled: boolean };
@@ -256,13 +335,67 @@ function killGroup(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): voi
 }
 
 function captureOutput(
-  options: { state: ProcessState; child: ReturnType<typeof spawn>; stream: "stdout" | "stderr" },
+  options: {
+    state: ProcessState;
+    child: ReturnType<typeof spawn>;
+    stream: "stdout" | "stderr";
+    scopeName?: string;
+    controlEnv?: NodeJS.ProcessEnv;
+    stopScope: () => void;
+  },
   chunk: Buffer,
 ): void {
   const appended = appendOutput(options.state[options.stream], chunk);
   options.state[options.stream] = appended.value;
   options.state.outputLimit ||= appended.overflow;
-  if (appended.overflow) killGroup(options.child, "SIGKILL");
+  if (appended.overflow) {
+    options.stopScope();
+    killGroup(options.child, "SIGKILL");
+  }
+}
+
+function createScopeStopper(options: ProcessOptions): {
+  stop: () => void;
+  wait: () => Promise<void>;
+  error: () => Error | undefined;
+} {
+  const { scopeName, controlEnv } = options;
+  if (!scopeName || !controlEnv) {
+    return { stop: () => undefined, wait: async () => undefined, error: () => undefined };
+  }
+  let cleanupPromise: Promise<void> | undefined;
+  let cleanupError: Error | undefined;
+  const stop = (): void => {
+    cleanupPromise ??= stopSystemdScope(scopeName, controlEnv).catch((error: unknown) => {
+      cleanupError = error instanceof Error ? error : new Error("Unable to confirm sandbox resource scope cleanup");
+    });
+  };
+  return { stop, wait: async () => cleanupPromise, error: () => cleanupError };
+}
+
+async function finishProcess(
+  code: number | null,
+  input: {
+    state: ProcessState;
+    timers: Array<NodeJS.Timeout | undefined>;
+    stopper: ReturnType<typeof createScopeStopper>;
+  },
+): Promise<SandboxResult> {
+  const { state, timers, stopper } = input;
+  if (state.settled) throw new Error("Sandbox process settled more than once");
+  state.settled = true;
+  for (const timer of timers) if (timer) clearTimeout(timer);
+  stopper.stop();
+  await stopper.wait();
+  const error = stopper.error();
+  if (error) throw error;
+  return {
+    exitCode: code,
+    stdout: state.stdout,
+    stderr: state.stderr,
+    timedOut: state.timedOut,
+    outputLimit: state.outputLimit,
+  };
 }
 
 function runProcess(options: ProcessOptions): Promise<SandboxResult> {
@@ -280,32 +413,33 @@ function runProcess(options: ProcessOptions): Promise<SandboxResult> {
     outputLimit: false,
     settled: false,
   };
+  const stopper = createScopeStopper(options);
   let timer: NodeJS.Timeout | undefined;
   let killTimer: NodeJS.Timeout | undefined;
   return new Promise((resolveResult, rejectResult) => {
     const finish = (code: number | null): void => {
       if (state.settled) return;
-      state.settled = true;
-      if (timer) clearTimeout(timer);
-      if (killTimer) clearTimeout(killTimer);
-      resolveResult({
-        exitCode: code,
-        stdout: state.stdout,
-        stderr: state.stderr,
-        timedOut: state.timedOut,
-        outputLimit: state.outputLimit,
-      });
+      void finishProcess(code, { state, timers: [timer, killTimer], stopper }).then(resolveResult, rejectResult);
     };
-    child.stdout.on("data", (chunk: Buffer) => captureOutput({ state, child, stream: "stdout" }, chunk));
-    child.stderr.on("data", (chunk: Buffer) => captureOutput({ state, child, stream: "stderr" }, chunk));
+    child.stdout.on("data", (chunk: Buffer) =>
+      captureOutput({ state, child, stream: "stdout", ...options, stopScope: stopper.stop }, chunk),
+    );
+    child.stderr.on("data", (chunk: Buffer) =>
+      captureOutput({ state, child, stream: "stderr", ...options, stopScope: stopper.stop }, chunk),
+    );
     child.once("error", () => {
+      if (state.settled) return;
       state.settled = true;
-      if (timer) clearTimeout(timer);
-      rejectResult(new Error("Unable to start the required host sandbox"));
+      for (const activeTimer of [timer, killTimer]) if (activeTimer) clearTimeout(activeTimer);
+      stopper.stop();
+      void stopper
+        .wait()
+        .then(() => rejectResult(stopper.error() ?? new Error("Unable to start the required host sandbox")));
     });
     child.once("close", finish);
     timer = setTimeout(() => {
       state.timedOut = true;
+      stopper.stop();
       killGroup(child, "SIGTERM");
       killTimer = setTimeout(() => killGroup(child, "SIGKILL"), 250);
     }, options.timeoutMs);
@@ -313,31 +447,81 @@ function runProcess(options: ProcessOptions): Promise<SandboxResult> {
 }
 
 export async function runSandboxed(command: string, args: string[], options: SandboxOptions): Promise<SandboxResult> {
+  const context = await prepareSandboxContext(options);
+  const sandboxArgs = createBwrapArgs({
+    command,
+    args,
+    options: context.options,
+    workspace: context.workspace,
+    hidden: context.hidden,
+    runtimeProfile: context.options.runtimeProfile,
+    ...(context.gitData ? { gitMounts: context.gitData.mounts } : {}),
+  });
+  return runProcess(createSandboxProcessOptions({ options, context, sandboxArgs }));
+}
+
+async function prepareSandboxContext(options: SandboxOptions): Promise<SandboxContext> {
   if (process.platform !== "linux")
     throw new Error("Agent filesystem sandbox requires Linux with bubblewrap installed");
   assertSandboxTimeout(options.timeoutMs);
   const workspace = await realpath(options.workspace);
   const scratch = await realpath(options.scratchDirectory);
   assertScratchBoundary(workspace, scratch);
+  await assertEgressSocket(options, workspace, scratch);
   assertRuntimeMountsOutside({ profile: options.runtimeProfile, workspace, scratchDirectory: scratch });
   const readyOptions = { ...options, scratchDirectory: scratch };
   const hidden = await hiddenPaths(readyOptions, workspace);
   const hasPrivacyBoundary = await hasWorkspacePrivacyBoundary(options, workspace);
   const gitData = hasPrivacyBoundary ? undefined : await gitSnapshot(options, workspace, scratch);
-  const sandboxArgs = createBwrapArgs({
-    command,
-    args,
-    options: readyOptions,
-    workspace,
-    hidden,
-    runtimeProfile: options.runtimeProfile,
-    ...(gitData ? { gitMounts: gitData.mounts } : {}),
-  });
-  return runProcess({
-    command: BWRAP_EXECUTABLE,
-    args: sandboxArgs,
-    cwd: workspace,
-    env: { ...safeEnvironment(readyOptions), ...(gitData?.env ?? {}) },
+  return { workspace, options: readyOptions, hidden, ...(gitData ? { gitData } : {}) };
+}
+
+function createSandboxProcessOptions(input: {
+  options: SandboxOptions;
+  context: SandboxContext;
+  sandboxArgs: string[];
+}): ProcessOptions {
+  const { options, context, sandboxArgs } = input;
+  const scope = options.resourceLimits ? createResourceScope(options, sandboxArgs) : undefined;
+  return {
+    command: scope ? SYSTEMD_RUN_EXECUTABLE : BWRAP_EXECUTABLE,
+    args: scope?.args ?? sandboxArgs,
+    cwd: context.workspace,
+    env: createSandboxEnvironment(context, scope?.controlEnv),
+    ...(scope ? { controlEnv: scope.controlEnv, scopeName: scope.name } : {}),
     timeoutMs: options.timeoutMs,
-  });
+  };
+}
+
+function createResourceScope(
+  options: SandboxOptions,
+  sandboxArgs: string[],
+): { name: string; controlEnv: NodeJS.ProcessEnv; args: string[] } {
+  const resourceLimits = options.resourceLimits;
+  if (!resourceLimits) throw new Error("Sandbox resource limits are required to create a systemd scope");
+  const name = `factory-${randomUUID()}.scope`;
+  const controlEnv = systemdControlEnvironment();
+  return {
+    name,
+    controlEnv,
+    args: createSystemdScopeArgs({
+      unitName: name,
+      resourceLimits,
+      timeoutMs: options.timeoutMs,
+      command: BWRAP_EXECUTABLE,
+      args: sandboxArgs,
+    }),
+  };
+}
+
+function createSandboxEnvironment(context: SandboxContext, controlEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const sandboxEnv = safeEnvironment(context.options);
+  const gitEnv = context.gitData?.env ?? {};
+  if (!controlEnv) return { ...sandboxEnv, ...gitEnv };
+  return {
+    ...controlEnv,
+    ...sandboxEnv,
+    PATH: `${sandboxEnv.PATH}:${controlEnv.PATH ?? "/usr/bin:/bin"}`,
+    ...gitEnv,
+  };
 }

@@ -14,7 +14,7 @@ The repository foundation, documentation, config templates, and agent prompts ar
 - **Configuration & Contexts:** `.env.example`, `.gitignore`, `config/factory.yaml`, `config/models.yaml`, `config/repos.example.yaml`, `config/contexts/global-factory-rules.md`, `templates/AGENTS.template.md`
 - **Agent Prompts:** `src/agents/planner/prompt.md`, `src/agents/builder/prompt.md`, `src/agents/reviewer/prompt.md`
 - **Phase 0 Complete:** Config loading and schemas in `src/engine/config_loader.ts` and `src/engine/config_schemas.ts`, privacy checks in `src/engine/privacy_guard.ts`, contracts in `src/engine/contracts.ts`, and unit tests under `tests/unit/`.
-- **Remaining Implementation:** Phase 1 acceptance and Phase 2 implementation with automated acceptance are complete. Fresh combined Linux verification and independent review passed. Live GitHub and Telegram factory acceptance is a separate operational follow-up; Phase 3 and later remain deferred.
+- **Remaining Implementation:** Phases 0–3 are implemented and passed Linux verification. Phase 4 remains deferred. Live GitHub and Telegram factory acceptance remains a separate operational follow-up.
 
 ---
 
@@ -23,7 +23,7 @@ The repository foundation, documentation, config templates, and agent prompts ar
 ```mermaid
 flowchart TB
     P0["Phase 0: Contracts, Config Loader & Fail-Closed Validator"]
-    P1["Phase 1 (MVP): role.yaml, run.sh, 3 CLI runners, local/GitHub trackers, Context Builder, Verifier"]
+    P1["Phase 1 (MVP): role.yaml, CLI adapters, local/GitHub trackers, Context Builder, Verifier"]
     P2["Phase 2 (Automation): Implemented, automated acceptance complete"]
     P3["Phase 3 (Infra & Network Hardening): Offline Verifier (--unshare-net), Nginx Egress Proxy, Resource Caps"]
     P4["Phase 4 (Multi-Repo & Scale): Parallel Runner, Ollama Local Swap, Cost Logs & CI Workflows"]
@@ -39,7 +39,7 @@ flowchart TB
 
 ### Target Files
 
-- `src/engine/config_loader.ts` and `src/engine/config_schemas.ts` — Load and validate factory, model, and repository YAML; merge model roles, defaults, repo settings, and overrides; resolve secrets only for enabled repositories. An explicit selection must identify an enabled repo and cannot activate one.
+- `src/engine/config_loader.ts` and `src/engine/config_schemas.ts` — Load and validate factory, model, and repository YAML; merge model roles, defaults, repo settings, and overrides; resolve tracker credentials only for enabled repositories. Provider credentials belong to the egress proxy and are never resolved by the application loader. An explicit selection must identify an enabled repo and cannot activate one.
 - `src/engine/privacy_guard.ts` — Validate provider locality and fail closed on cloud routes for every repository, including disabled repositories.
 - `src/engine/contracts.ts` — Validate `Ticket`, `AgentResult`, and `VerificationResult` against [docs/system_design.md](system_design.md).
 - `tests/unit/test_config_loader.ts` and `tests/unit/test_contracts.ts` — Cover config merging, privacy, environment references, prototype keys, and contract validation.
@@ -48,7 +48,7 @@ flowchart TB
 ### Acceptance Criteria
 
 - [x] Loading `config/repos.example.yaml` merges `defaults` and per-repo `overrides` accurately.
-- [x] Missing required env vars (`api_key_env`, `token_env`) fail fast with the env var name (never printing secret values).
+- [x] Missing required tracker env vars (`token_env`) fail fast with the env var name (never printing secret values); provider credentials are held by the proxy and are not read by the loader.
 - [x] Setting `allow_cloud_llm: false` with a cloud provider (`is_local: false`) raises a hard failure (fail-closed).
 - [x] Validating malformed `Ticket`, `AgentResult`, or `VerificationResult` payloads fails with clear field errors.
 
@@ -71,7 +71,7 @@ flowchart TB
 
 - **Files:**
   - `src/agents/run.sh` — Strict Bash (`set -euo pipefail`). Accepts `--role`, `--workspace`, `--prompt`, `--repo-id`. Calls `privacy_guard`, resolves CLI/provider/model, enforces `agent_timeout_minutes`, invokes the configured `src/adapters/cli_runner/<cli>`, and writes `AgentResult` JSON.
-  - `src/adapters/cli_runner/opencode.ts`, `agy.ts`, `codex.ts` — Translate standard arguments into native CLI invocations and capture exit code + output file. OpenCode remains the default route; Agy and Codex are explicit role overrides.
+  - `src/adapters/cli_runner/opencode.ts`, `agy.ts`, `codex.ts` — Translate standard arguments into native CLI invocations and capture exit code + output file. These adapters are part of the historical implementation; current real-agent execution supports OpenCode through the approved egress proxy only. Agy and Codex routes fail closed.
 
 ### 1.3 Context Builder (Context Layering)
 
@@ -105,17 +105,17 @@ flowchart TB
 
 ### Phase 1 Acceptance Criteria
 
-- [x] Agent runner routes OpenCode, Agy, and Codex and returns the standard `AgentResult` shape. CLI adapter coverage includes mocks; Agy also completed the real Linux lifecycle below. Codex and OpenCode were not live-tested.
+- [x] Historical adapter coverage exercised OpenCode, Agy, and Codex invocation shapes and the standard `AgentResult` contract. Current real-agent policy permits only OpenCode through the approved proxy; unsupported direct-auth CLI routes fail closed.
 - [x] `context_builder` tests all 3 modes, inline root instructions exactly once, and enforce ignore/containment checks.
 - [x] Local and mocked GitHub trackers bind exact `/approve` to allowed identity and the current plan; stale and unauthorized approvals are rejected.
 - [x] Orchestrator lifecycle tests cover planning, approval, builder, verifier, and fresh Reviewer outcomes; artifacts remain outside the repository.
 - [x] `yarn build` imports the built orchestrator entry; the entry exports `planTicket` and `resumeTicket`.
 - [x] Linux+bwrap sandbox acceptance with the required explicit runtime profile passes allowed/denied filesystem checks and the default lifecycle.
-- [x] A real Agy-backed sample ticket completes through the default profile-backed `planTicket`/`resumeTicket` lifecycle with current-plan-bound synthetic local approval and default verification.
+- [x] Historical baseline: a real Agy-backed sample ticket completed through the default profile-backed `planTicket`/`resumeTicket` lifecycle with current-plan-bound synthetic local approval and default verification. This direct-auth route is no longer supported for current real-agent execution.
 
-**Acceptance evidence:** On Debian 13 ARM64 with Node.js 26.13.1, Bubblewrap 0.12, and Agy 1.5.14, the profile-backed default lifecycle completed Planner, Builder, four verifier steps, and a fresh Reviewer. The Reviewer returned `APPROVE_FOR_DRAFT_PR`; only `src/math.cjs` changed in the synthetic linked worktree, while the main branch and ignored sentinels remained unchanged. The approval was synthetic and bound to the current plan hash. Codex and OpenCode have adapter tests but no live-provider acceptance.
+**Historical acceptance evidence:** On Debian 13 ARM64 with Node.js 26.13.1, Bubblewrap 0.12, and Agy 1.5.14, the former profile-backed direct-auth lifecycle completed Planner, Builder, four verifier steps, and a fresh Reviewer. The Reviewer returned `APPROVE_FOR_DRAFT_PR`; only `src/math.cjs` changed in the synthetic linked worktree, while the main branch and ignored sentinels remained unchanged. Approval was synthetic and bound to the current plan hash. This proves the historical adapter/runtime path only; it is not acceptance of the current OpenCode-only proxy policy.
 
-**Runtime boundary:** Linux is the production target and requires Bubblewrap (`bwrap`) with user namespaces and an operator-owned `config/runtime-profile.yaml` outside the worktree and scratch directory. The sandbox uses an empty controlled root, exact file mounts and selected package-directory mounts, plus a fresh `/home/factory`; it does not inherit host `HOME`, Git global/system configuration, or hooks. Git metadata is omitted whenever `privacy.ignore_paths` is nonempty or a blocked path resolves inside the workspace. Only unprotected runs receive a scratch Git snapshot with read-only objects, refs, and packed refs. The Agy cached-auth file mounts described in the [runtime profile setup](../INTEGRATION_GUIDE.md#required-linux-runtime-profile) passed the live test; other credential mechanisms and provider routes remain unverified. Filesystem isolation does not claim secrecy from a privileged host administrator or unrelated host processes. The reviewed Phase 1 outcome remains `ai_reviewing`; opening a Draft PR and setting `ai_pr_ready` are Phase 2 behavior.
+**Runtime boundary:** Linux is the production target and requires Bubblewrap (`bwrap`) with user namespaces and an operator-owned `config/runtime-profile.yaml` outside the worktree and scratch directory. The sandbox uses an empty controlled root, exact file mounts and selected package-directory mounts, plus a fresh `/home/factory`; it does not inherit host `HOME`, Git global/system configuration, or hooks. Git metadata is omitted whenever `privacy.ignore_paths` is nonempty or a blocked path resolves inside the workspace. Only unprotected runs receive a scratch Git snapshot with read-only objects, refs, and packed refs. Agy cached-auth mounts passed the historical direct-auth test, but Agy and Codex are not supported by the current real-agent proxy policy; no current operator-profile setup guide is published here. Other credential mechanisms and provider routes remain unverified. Filesystem isolation does not claim secrecy from a privileged host administrator or unrelated host processes. The reviewed Phase 1 outcome remains `ai_reviewing`; opening a Draft PR and setting `ai_pr_ready` are Phase 2 behavior.
 
 ---
 
@@ -208,32 +208,65 @@ Automated acceptance uses temporary Git repositories, a local bare origin, real 
 - **Files:**
   - `infra/docker-compose.yml`
   - `infra/nginx.conf`
+  - `infra/proxy-llm-headers.conf.template`
 - **Behavior:**
-  - Run an outbound-only local `Nginx` Egress Proxy container on a dedicated loopback/internal interface.
-  - Inject provider LLM API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.) exclusively at the proxy layer, apply per-provider rate limits, and enforce `privacy.allow_cloud_llm: false` at the network boundary (allowing only local providers such as Ollama for confidential repositories).
+  - Run NGINX without published TCP ports and expose separate public and local-only Unix sockets.
+  - Route only fixed provider paths to fixed upstreams; inject proxy keys, clear client credentials, verify
+    upstream TLS, and apply per-provider rate limits.
+  - The local socket allows only the Ollama-compatible route. It denies cloud paths regardless of headers.
 
 ### 3.3 Egress Proxy Adapter & Sandbox Secret Removal
 
 - **Files:**
   - `src/adapters/llm/egress_proxy.ts`
   - Update `src/adapters/cli_runner/sandbox.ts`, `src/engine/config_schemas.ts`, and `src/engine/privacy_guard.ts`
+  - Update `config/factory.yaml`, `.env.example`, `INTEGRATION_GUIDE.md`, and `README.md`
 - **Behavior:**
-  - Route agent CLI LLM calls to the local `Nginx` Egress Proxy endpoint with repository privacy policy routing.
-  - Remove raw provider API keys from `forwardedEnvironment` in `sandbox.ts` when Egress Proxy mode is enabled so compromised code or tools inside `bwrap` cannot read or exfiltrate real credentials.
+  - Route supported OpenCode models through a loopback bridge to the Unix socket selected by repository
+    privacy policy.
+  - Require the approved egress proxy for every real agent run. Missing or disabled proxy configuration,
+    unsupported CLI/provider routes, and unavailable or invalid sockets fail before output/scratch creation or
+    process spawn; there is no direct-network fallback.
+  - Never resolve or pass provider keys through the application config loader or agent process. The proxy owns
+    provider credentials, and every real agent sandbox uses an unshared network namespace with `offline: true`.
 
 ### 3.4 Process & Resource Limits Hardening
 
 - **Files:**
-  - Update `src/adapters/cli_runner/sandbox.ts` and `config/factory.yaml`
+  - Update `src/adapters/cli_runner/sandbox.ts`, `config/factory.yaml`, and `INTEGRATION_GUIDE.md`
 - **Behavior:**
-  - Enforce configurable CPU, memory, and PID limits (e.g., via `systemd-run --user --scope` or `prlimit`) alongside `agent_timeout_minutes` and `MAX_OUTPUT_BYTES`.
+  - Enforce configurable CPU, memory, and PID limits for the full sandbox process tree through systemd user
+    scopes backed by delegated cgroup v2 controllers.
+  - Fail closed if scoped resource containment is unavailable; retain timeout and output-size limits.
 
 ### Phase 3 Acceptance Criteria
 
-- [ ] `verifier.ts` runs inside `bwrap --unshare-net`; unit/integration tests confirm outbound network calls from verification commands fail.
-- [ ] Agent sandboxes running in Egress Proxy mode contain zero raw provider API keys in `process.env` while successfully completing LLM requests through `infra/nginx.conf`.
-- [ ] A confidential repository (`allow_cloud_llm: false`) is blocked at both `privacy_guard.ts` and `infra/nginx.conf` if routed to a cloud provider.
-- [ ] CPU, memory, and PID caps terminate runaway verification or build processes cleanly without destabilizing the host.
+The supported OpenCode egress routes are OpenRouter, OpenAI, OpenCode Go, and the OpenAI-compatible Ollama
+endpoint. Every real agent run requires the proxy. Set `egress_proxy.enabled: true` and configure public/local
+socket paths in `config/factory.yaml`; disabling or omitting the proxy denies agent execution. Provider
+credentials are held by the proxy. See the [integration guide](../INTEGRATION_GUIDE.md#phase-3-egress-proxy-and-resource-limits)
+for host socket permissions and systemd/cgroup prerequisites.
+
+**Historical baseline (before the mandatory-proxy correction):** The original Phase 3 implementation passed
+Linux verification with 27/27 test files and 174/174 tests, zero skips or unhandled errors, a 32-module Vite
+build, and an import check. This historical result is separate from the final security verification below.
+
+**Security follow-up status:** Complete. Independent security review approved requiring the configured,
+privacy-selected egress proxy for every real agent role. Missing, disabled, unsupported, or invalid routes fail
+before artifacts or process spawn; provider credentials are not resolved by the application loader or passed
+to agents. All real agents run offline outside the approved socket route.
+
+**Final Linux verification:** With Node.js v26.13.1 and Yarn 1.22.22, the configured `yarn verify` command
+passed Prettier, ESLint, TypeScript typecheck, all 28 test files and 187 tests with zero skips, failures, or
+unhandled errors, and the 32-module Vite build plus orchestrator import check. Focused security and integration
+coverage passed 48/48 tests, including the new agent fail-closed checks, the real Unix-socket Phase 1 lifecycle,
+and actual systemd resource-scope cleanup. The real OpenCode proxy acceptance used a synthetic upstream; no
+live provider credentials, live external inference, or production deployment were tested.
+
+- [x] `verifier.ts` runs inside `bwrap --unshare-net`; unit/integration tests confirm outbound network calls from verification commands fail.
+- [x] Every real agent role requires an enabled, supported proxy route, receives only its privacy-selected socket with `offline: true`, and has no provider credentials in application config or `process.env`; disabled/missing/unsupported routes fail before artifacts or process spawn.
+- [x] A confidential repository (`allow_cloud_llm: false`) is blocked at both `privacy_guard.ts` and `infra/nginx.conf` if routed to a cloud provider.
+- [x] CPU, memory, and PID caps terminate runaway verification or build processes cleanly without destabilizing the host.
 
 ---
 
