@@ -39,8 +39,8 @@ export const AgentResultSchema = z
     provider_used: z.string(),
     model_used: z.string(),
     duration_seconds: z.number().nonnegative(),
-    tokens_used: z.number().int().nonnegative(),
-    estimated_cost_usd: z.number().nonnegative(),
+    tokens_used: z.number().int().nonnegative().nullable(),
+    estimated_cost_usd: z.number().nonnegative().nullable(),
     output_file: z.string(),
   })
   .strict();

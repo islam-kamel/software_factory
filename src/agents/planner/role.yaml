@@ -1,0 +1,10 @@
+# ============================================================
+# role.yaml
+# Purpose : Restrict Planner access and name its plan artifact
+# Feature : Planner Agent
+# Role    : Agent Configuration
+# API Doc : docs/implementation_plan.md, Phase 1.1
+# ============================================================
+access: read_only
+prompt_file: prompt.md
+output_file: PLAN.md

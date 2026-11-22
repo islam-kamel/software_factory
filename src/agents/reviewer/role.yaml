@@ -1,0 +1,10 @@
+# ============================================================
+# role.yaml
+# Purpose : Restrict Reviewer access and name its review artifact
+# Feature : Reviewer Agent
+# Role    : Agent Configuration
+# API Doc : docs/implementation_plan.md, Phase 1.1
+# ============================================================
+access: read_only
+prompt_file: prompt.md
+output_file: REVIEW_REPORT.md

@@ -8,7 +8,7 @@ For architectural details and data contracts, refer to [docs/architecture.md](do
 
 ## Tech Stack
 
-- **Purpose:** A vendor-neutral, Git-worktree-isolated AI Software Factory that turns scoped tickets into verified Draft Pull Requests across existing (brownfield) and new repositories through swappable adapters.
+- **Purpose:** A vendor-neutral Linux-first AI Software Factory that plans, builds, verifies, and reviews scoped tickets through swappable adapters; Draft PR delivery is deferred beyond Phase 1.
 - **Language / Runtime:** TypeScript 6.0.2 / Node.js v26.13.1 / Shell (Bash)
 - **Framework & Key Libraries:** Lightweight CLI/engine architecture (no heavy web framework); `yaml@2.9.1` (YAML config parsing), `zod@4.6.7` (runtime schema validation for configs and JSON contracts), `vitest@5.1.1` (unit & integration tests), `eslint@10.15.0` + `prettier@3.10.1` (linting & formatting), `gitleaks` (pre-push secret scanning), `vite@8.3.7` (complier)
 - **Package Manager:** Yarn
@@ -28,6 +28,8 @@ docs/               # Architecture and system design specifications
 logs/               # Runtime logs and cost/run history (never commit sensitive output)
 ```
 
+Production child execution requires Linux Bubblewrap (`bwrap`) with user namespaces. Use a dedicated unprivileged service account and home directory for native CLI cached authentication. Phase 1 requires the caller to provide an `ai/` linked worktree; automatic worktree management, retries, PR creation, and notifications are deferred.
+
 ---
 
 ## 2. Core Development Rules
@@ -45,6 +47,7 @@ logs/               # Runtime logs and cost/run history (never commit sensitive 
 8. **Minimal, Scoped Diffs:** Change only what the ticket requires. Do not reformat unrelated files or refactor untouched modules.
 
 ### Protected Files (Do Not Touch Without Explicit Approval)
+
 - `.env`, `.env.*.local`
 - `config/repos.yaml` (local private registry; update `config/repos.example.yaml` for schema changes)
 - `.github/workflows/*`
@@ -68,6 +71,7 @@ Follow this exact lifecycle for every task:
 7. **Deliver & Clean Up (`ai_pr_ready`):** Open a **Draft PR** with a summary and verification results, notify the developer, and remove the temporary `git worktree`.
 
 ### Branch & Commit Conventions
+
 - **Branches:** `ai/issue-<id>` for automated runs; `feat/<slug>`, `fix/<slug>`, or `chore/<slug>` for manual work.
 - **Commits:** Use [Conventional Commits](https://www.conventionalcommits.org/):
   - `feat(adapters): add local markdown tracker adapter`
@@ -83,12 +87,14 @@ Core modules may be written in **Bash**, **TypeScript (Node.js)**, or **Python**
 ### 4.1 Zero Vendor Lock-In (Use Adapters, Not Direct Calls)
 
 **Wrong (`❌`)** — Hardcoding GitHub CLI directly inside the core engine:
+
 ```bash
 # src/engine/orchestrator.sh
 issues=$(gh issue list --label "ai-ready" --json number,title)
 ```
 
 **Right (`✅`)** — Delegating through the configured adapter interface:
+
 ```bash
 # src/engine/orchestrator.sh
 tracker_adapter="src/adapters/tracker/${TRACKER_ADAPTER}.sh"
@@ -100,6 +106,7 @@ issues=$("${tracker_adapter}" get_ready_tickets)
 ### 4.2 Safe Shell Scripts (`run.sh` and Bash Modules)
 
 **Wrong (`❌`)** — Missing strict mode, unquoted variables, and silent failures:
+
 ```bash
 #!/bin/bash
 cd $WORKSPACE
@@ -107,6 +114,7 @@ cd $WORKSPACE
 ```
 
 **Right (`✅`)** — Strict mode, validated inputs, and quoted variables:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail
@@ -123,12 +131,14 @@ cd "${workspace}"
 ### 4.3 Configuration & Secrets Handling
 
 **Wrong (`❌`)** — Hardcoding provider, model, and API key in source code:
+
 ```python
 API_KEY = "sk-or-v1-hardcoded-secret"
 MODEL = "anthropic/claude-sonnet"
 ```
 
 **Right (`✅`)** — Reading secrets from environment variables and models from `config/models.yaml`:
+
 ```python
 import os
 
@@ -145,12 +155,14 @@ model = role_config["model"]
 ### 4.4 Standard JSON Contracts & Clean Error Parsing
 
 **Wrong (`❌`)** — Returning raw, noisy multi-thousand-line terminal output:
+
 ```python
 def run_verifier(cmd: str) -> str:
     return run_shell(cmd).stdout  # 2,000+ lines of noise
 ```
 
 **Right (`✅`)** — Returning the standard `VerificationResult` contract with a focused summary:
+
 ```python
 def run_verifier(cmd: str, attempt: int) -> dict:
     result = run_shell(cmd)
@@ -167,6 +179,7 @@ def run_verifier(cmd: str, attempt: int) -> dict:
 ### 4.5 Guard Clauses Over Deep Nesting
 
 **Wrong (`❌`)** — Deeply nested conditionals that obscure the happy path:
+
 ```typescript
 function canRetry(ticket: Ticket, attempt: number, maxRetries: number): boolean {
   if (ticket.state === "verifying") {
@@ -181,6 +194,7 @@ function canRetry(ticket: Ticket, attempt: number, maxRetries: number): boolean 
 ```
 
 **Right (`✅`)** — Flat guard clauses with early returns:
+
 ```typescript
 function canRetry(ticket: Ticket, attempt: number, maxRetries: number): boolean {
   if (ticket.state !== "verifying") return false;
@@ -196,12 +210,14 @@ function canRetry(ticket: Ticket, attempt: number, maxRetries: number): boolean 
 Always use the `@/` path alias mapped to `src/` for cross-module imports in TypeScript instead of deep relative paths (`../../`). Relative imports (`./`) are only allowed for sibling files within the same folder.
 
 **Wrong (`❌`)** — Deep relative paths across modules:
+
 ```typescript
 import { loadConfig } from "../../engine/config_loader";
 import { parseErrorSummary } from "../../self_healing/error_parser";
 ```
 
 **Right (`✅`)** — Clean `@/` alias mapped to `src/`:
+
 ```typescript
 import { loadConfig } from "@/engine/config_loader";
 import { parseErrorSummary } from "@/self_healing/error_parser";
@@ -214,7 +230,7 @@ import { parseErrorSummary } from "@/self_healing/error_parser";
 - **Files & Folders:** `snake_case` for shell/Python modules (`error_parser.py`, `state_manager.sh`) and YAML config keys (`max_self_heal_retries`).
 - **Functions:** Verb-first, single responsibility (`lock_ticket`, `create_worktree`, `parse_error_summary`).
 - **Constants:** `UPPER_SNAKE_CASE` (`MAX_RETRIES`, `DEFAULT_TIMEOUT_MINUTES`).
-- **Comments:** Explain *why* a guardrail or constraint exists, not *what* obvious syntax does.
+- **Comments:** Explain _why_ a guardrail or constraint exists, not _what_ obvious syntax does.
 
 ---
 
@@ -224,12 +240,12 @@ Keep documentation accurate, beginner-friendly, and strictly in sync with code a
 
 ### 5.1 Documentation Sync Matrix (When to Update Docs)
 
-| When You Change... | Also Update... |
-| :--- | :--- |
+| When You Change...                                                          | Also Update...                                                                      |
+| :-------------------------------------------------------------------------- | :---------------------------------------------------------------------------------- |
 | `config/factory.yaml`, `config/models.yaml`, or `config/repos.example.yaml` | `INTEGRATION_GUIDE.md`, `README.md`, and `.env.example` (if new env vars are added) |
-| New agent role (`src/agents/<role>/`) or adapter (`src/adapters/*`) | `docs/architecture.md`, `CONTRIBUTING.md`, and `README.md` |
-| Data contracts, state machine, or security guardrails | `docs/system_design.md` and `AGENTS.md` |
-| Phase milestones completed or scope adjusted | `docs/implementation_plan.md` |
+| New agent role (`src/agents/<role>/`) or adapter (`src/adapters/*`)         | `docs/architecture.md`, `CONTRIBUTING.md`, and `README.md`                          |
+| Data contracts, state machine, or security guardrails                       | `docs/system_design.md` and `AGENTS.md`                                             |
+| Phase milestones completed or scope adjusted                                | `docs/implementation_plan.md`                                                       |
 
 ### 5.2 Writing Patterns
 
@@ -242,12 +258,14 @@ Keep documentation accurate, beginner-friendly, and strictly in sync with code a
 ### 5.3 Documentation Example (Wrong vs. Right)
 
 **Wrong (`❌`)** — Hardcoded local path, raw token, and duplicated schema with no link:
+
 ```markdown
 Edit `/Users/islam/dev/software_factory/config/repos.yaml` and add `token: "ghp_12345"`.
 (Also pastes a 60-line copy of the entire Ticket JSON contract inside README.md)
 ```
 
 **Right (`✅`)** — Relative link, placeholder path, `token_env`, and single source of truth:
+
 ```markdown
 Copy [config/repos.example.yaml](config/repos.example.yaml) to `config/repos.yaml`,
 set `local_path: "/path/to/projects/my-app"`, and reference your token via `token_env: "GITHUB_TOKEN"`.
