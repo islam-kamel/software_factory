@@ -108,20 +108,35 @@ mounted file. The profile and its sources must remain outside the target worktre
 
 The sandbox creates a fresh `/home/factory` and derives `PATH` from mounted command targets. Host `HOME`,
 shell startup files, Git global/system configuration, and hooks are not inherited. The example profile does
-not configure native CLI cached authentication; host login is unavailable unless a specific auth file is
-explicitly mounted and validated in the sandbox. Only selected provider API-key variables and OpenCode flags
-are passed through.
+not configure native CLI cached authentication. On Linux, authenticate Agy with `agy acp --login`, then add
+these two exact read-only file mounts to the existing profile. Use paths under the authenticated account's
+Agy home; never mount the whole home directory or put auth values in YAML.
+
+```yaml
+mounts:
+  - source: /path/to/agy-home/.gemini/antigravity-cli/antigravity-oauth-token
+    target: /home/factory/.gemini/antigravity-cli/antigravity-oauth-token
+  - source: /path/to/agy-home/.gemini/antigravity-cli/cache/acp-auth-state.json
+    target: /home/factory/.gemini/antigravity-cli/cache/acp-auth-state.json
+```
+
+The file-backed login was verified with Agy 1.5.14 in the profile-backed Linux lifecycle below. The files must
+be canonical regular files outside the repository and scratch directories. This does not verify SecretService,
+keyring, other CLI versions, or persistent credential refresh. Only selected provider API-key variables and
+OpenCode flags are passed through.
 
 Git metadata is mounted only when `privacy.ignore_paths` is empty and no configured blocked path resolves
 inside the workspace. Protected runs receive no Git metadata, so repository-aware Git commands cannot read
 repository state; the Engine supplies scoped context and diff instead. Unprotected runs get only a scratch Git snapshot and
 read-only objects, refs, and packed refs. Repository config, hooks, alternates, and other worktree metadata
 are not exposed. Do not mount broad system directories or assume host configuration is visible.
-Runtime-profile-backed Linux acceptance remains pending; this setup does not imply a successful end-to-end run.
+Profile-backed Linux sandbox checks and a complete real Agy lifecycle passed on Debian 13 ARM64 with Node.js
+26.13.1 and Bubblewrap 0.12. The lifecycle used a synthetic repository and hash-bound synthetic local approval;
+it did not create a PR or test a real operator's approval flow. Codex and OpenCode were not live-tested.
 
 ### Approval and current Phase 1 boundary
 
-For Local Markdown tickets, a human sets approval frontmatter after reviewing the latest `factory_plan` and matching `factory_plan_hash`; ticket author text is not authenticated identity. For GitHub, the adapter checks the actual comment account, exact `/approve`, the allowlist, and that approval follows the latest published plan. Prompts, plans, reports, and run metadata are stored outside the repository. Phase 1 ends at review and does not create worktrees, lock tickets, retry repairs, publish PRs, or notify users. The sandbox boundary is described in [Required Linux runtime profile](#required-linux-runtime-profile).
+For Local Markdown tickets, a human sets approval frontmatter after reviewing the latest `factory_plan` and matching `factory_plan_hash`; ticket author text is not authenticated identity. The live lifecycle exercised this path with a synthetic allowed operator. For GitHub, the adapter checks the actual comment account, exact `/approve`, the allowlist, and that approval follows the latest published plan. Prompts, plans, reports, and run metadata are stored outside the repository. Phase 1 ends at review and does not create worktrees, lock tickets, retry repairs, publish PRs, or notify users. The sandbox boundary is described in [Required Linux runtime profile](#required-linux-runtime-profile).
 
 ### Step 3: Configure Tracker, Approvers & Verification
 

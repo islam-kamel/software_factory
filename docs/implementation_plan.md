@@ -14,7 +14,7 @@ The repository foundation, documentation, config templates, and agent prompts ar
 - **Configuration & Contexts:** `.env.example`, `.gitignore`, `config/factory.yaml`, `config/models.yaml`, `config/repos.example.yaml`, `config/contexts/global-factory-rules.md`, `templates/AGENTS.template.md`
 - **Agent Prompts:** `src/agents/planner/prompt.md`, `src/agents/builder/prompt.md`, `src/agents/reviewer/prompt.md`
 - **Phase 0 Complete:** Config loading and schemas in `src/engine/config_loader.ts` and `src/engine/config_schemas.ts`, privacy checks in `src/engine/privacy_guard.ts`, contracts in `src/engine/contracts.ts`, and unit tests under `tests/unit/`.
-- **Remaining Implementation:** Phase 1 runtime-profile-backed Linux acceptance remains pending. Phase 2 and later items below remain deferred.
+- **Remaining Implementation:** Phase 1 acceptance is complete. Phase 2 and later items below remain deferred.
 
 ---
 
@@ -109,12 +109,12 @@ flowchart TB
 - [x] Local and mocked GitHub trackers bind exact `/approve` to allowed identity and the current plan; stale and unauthorized approvals are rejected.
 - [x] Orchestrator lifecycle tests cover planning, approval, builder, verifier, and fresh Reviewer outcomes; artifacts remain outside the repository.
 - [x] `yarn build` imports the built orchestrator entry; the entry exports `planTicket` and `resumeTicket`.
-- [ ] Linux+bwrap sandbox acceptance with the required explicit runtime profile passes allowed/denied filesystem checks and the default lifecycle.
-- [ ] A real Agy-backed sample ticket completes through the default profile-backed `planTicket`/`resumeTicket` lifecycle with current-plan-bound local approval and default verification.
+- [x] Linux+bwrap sandbox acceptance with the required explicit runtime profile passes allowed/denied filesystem checks and the default lifecycle.
+- [x] A real Agy-backed sample ticket completes through the default profile-backed `planTicket`/`resumeTicket` lifecycle with current-plan-bound synthetic local approval and default verification.
 
-**Earlier acceptance evidence:** A real Agy lifecycle and Linux sandbox checks passed before the explicit runtime-profile boundary was introduced. That run is historical evidence only and does not satisfy the pending profile-backed checks above. Codex and OpenCode routes have adapter tests but no live-provider acceptance.
+**Acceptance evidence:** On Debian 13 ARM64 with Node.js 26.13.1, Bubblewrap 0.12, and Agy 1.5.14, the profile-backed default lifecycle completed Planner, Builder, four verifier steps, and a fresh Reviewer. The Reviewer returned `APPROVE_FOR_DRAFT_PR`; only `src/math.cjs` changed in the synthetic linked worktree, while the main branch and ignored sentinels remained unchanged. The approval was synthetic and bound to the current plan hash. Codex and OpenCode have adapter tests but no live-provider acceptance.
 
-**Runtime boundary:** Linux is the production target and requires Bubblewrap (`bwrap`) with user namespaces and an operator-owned `config/runtime-profile.yaml` outside the worktree and scratch directory. The sandbox uses an empty controlled root, exact file mounts and selected package-directory mounts, plus a fresh `/home/factory`; it does not inherit host `HOME`, Git global/system configuration, or hooks. Git metadata is omitted whenever `privacy.ignore_paths` is nonempty or a blocked path resolves inside the workspace. Only unprotected runs receive a scratch Git snapshot with read-only objects, refs, and packed refs. Cached native CLI login remains unverified. See the [runtime profile setup](../INTEGRATION_GUIDE.md#required-linux-runtime-profile). Filesystem isolation does not claim secrecy from a privileged host administrator or unrelated host processes. The reviewed Phase 1 outcome remains `ai_reviewing`; opening a Draft PR and setting `ai_pr_ready` are Phase 2 behavior.
+**Runtime boundary:** Linux is the production target and requires Bubblewrap (`bwrap`) with user namespaces and an operator-owned `config/runtime-profile.yaml` outside the worktree and scratch directory. The sandbox uses an empty controlled root, exact file mounts and selected package-directory mounts, plus a fresh `/home/factory`; it does not inherit host `HOME`, Git global/system configuration, or hooks. Git metadata is omitted whenever `privacy.ignore_paths` is nonempty or a blocked path resolves inside the workspace. Only unprotected runs receive a scratch Git snapshot with read-only objects, refs, and packed refs. The Agy cached-auth file mounts described in the [runtime profile setup](../INTEGRATION_GUIDE.md#required-linux-runtime-profile) passed the live test; other credential mechanisms and provider routes remain unverified. Filesystem isolation does not claim secrecy from a privileged host administrator or unrelated host processes. The reviewed Phase 1 outcome remains `ai_reviewing`; opening a Draft PR and setting `ai_pr_ready` are Phase 2 behavior.
 
 ---
 

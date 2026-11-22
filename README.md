@@ -107,6 +107,6 @@ software_factory/
 
 ## Build Roadmap
 
-- **Phase 1 (MVP):** The implementation and prior Linux/Agy lifecycle are complete, but acceptance for the required explicit runtime profile is pending. The earlier Agy run used the previous sandbox boundary and does not verify the profile-backed runtime. Codex and OpenCode have adapter tests, not live-provider tests.
+- **Phase 1 (MVP):** Linux runtime-profile sandbox checks and a real Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and a synthetic repository; it did not create a PR. Codex and OpenCode have adapter tests, not live-provider tests. See the [runtime profile and acceptance details](INTEGRATION_GUIDE.md#required-linux-runtime-profile).
 - **Phase 2 (Automation):** Automatic worktree lifecycle, locking, self-healing retries, Draft PRs, and notifications.
 - **Phase 3 (Multi-Repo & Scale):** Multi-repo runner via `config/repos.yaml`, parallel worktrees, and local Ollama hot-swapping.

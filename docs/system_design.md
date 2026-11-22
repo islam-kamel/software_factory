@@ -227,7 +227,7 @@ gantt
     dateFormat X
     axisFormat Phase %s
 
-    section Phase 1: MVP (Runtime profile acceptance pending)
+    section Phase 1: MVP (Linux/Agy acceptance complete)
     Local/GitHub trackers and three CLI routes :p1, 0, 1
     Context, verifier, and orchestration       :p2, 0, 1
     Profile-backed Linux sandbox and real Agy :p3, 1, 2
@@ -243,6 +243,6 @@ gantt
     Parallel worktree execution            :p10, 5, 6
 ```
 
-- **Phase 1 (MVP, implementation complete; runtime-profile acceptance pending):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, verifier, and plan/approval/build/review lifecycle. A real Agy ticket passed with the prior sandbox boundary, but that run does not verify the required explicit runtime profile. Codex and OpenCode have no live-provider acceptance. Phase 1 does not open a PR.
+- **Phase 1 (MVP, acceptance complete):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, verifier, and plan/approval/build/review lifecycle. The profile-backed Linux sandbox checks and a real Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and did not open a PR. Codex and OpenCode have no live-provider acceptance. Phase 1 does not open a PR.
 - **Phase 2 (Hands-Free):** Add `git worktree`, the `self_healing` 3-retry loop, and notifications.
 - **Phase 3 (True No-Lock-in Scale):** Connect multiple existing projects via `repos.yaml` and plug in a second LLM provider or local model to test hot-swapping.
