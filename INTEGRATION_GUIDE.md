@@ -10,8 +10,9 @@ Before connecting a repository, make sure you have:
 
 - **Git 2.20+** (with `git worktree` support)
 - **Linux with Bubblewrap (`bwrap`) and working user namespaces** for isolated child processes
+- **A private runtime profile** at `config/runtime-profile.yaml`; child commands run only with explicitly mounted files
 - **At least one supported CLI** installed and authenticated: OpenCode, Agy, or Codex
-- **A dedicated unprivileged service account and home directory** for native CLI cached authentication
+- **A dedicated unprivileged Linux service account**; the sandbox uses a fresh `/home/factory`, not the host home
 - **A GitHub token** only when using the GitHub tracker; Local Markdown supports offline use
 - **Secret scanner (recommended):** `gitleaks` or `trufflehog` installed locally for `verification.secret_scan`
 - **Local LLM runtime (optional):** `ollama` (for confidential/NDA repos with `allow_cloud_llm: false`)
@@ -50,7 +51,7 @@ Open [config/models.yaml](config/models.yaml) to configure which provider and mo
 - **Builder:** Fast, cost-effective coding model (e.g., `glm-5.3` via OpenCode Go)
 - **Reviewer:** High-precision audit model (e.g., `anthropic/claude-opus` or a local `ollama-local` model)
 
-The native CLI providers `antigravity` (Agy) and `openai` (Codex) use `auth_mode: "cli"` and `is_local: false`. They reuse CLI login and require no new API key variables. OpenCode remains the default route. To use Agy for Planner, override its route in `config/models.yaml`:
+The native CLI providers `antigravity` (Agy) and `openai` (Codex) use `auth_mode: "cli"` and `is_local: false`. The sandbox does not inherit host CLI login: provide only the required auth material as explicit file mounts under its fresh home, then validate that login works inside the profile-backed runtime. Configured API-key routes receive only their selected environment variables where the runner supports them. OpenCode remains the default route. To use Agy for Planner, override its route in `config/models.yaml`:
 
 ```yaml
 roles:
@@ -94,11 +95,33 @@ Pick the mode that fits your repository:
 
 **Precedence Rule (in `merge` mode):** Factory rules take precedence for security and workflow. The selected root instruction is included inline once; runners disable CLI project auto-loading. Other instruction files are safe relative path pointers. Ignore patterns are applied before file reads.
 
-`factory_only` requires a readable factory context file. The product targets Linux and requires Bubblewrap (`bwrap`) with user namespaces. Use a dedicated unprivileged service account and home directory for cached native CLI authentication. Child access is scoped to the configured repository workspace, ignored paths, and scratch area; this does not guarantee secrecy from host administrators or unrelated host processes.
+`factory_only` requires a readable factory context file. The product targets Linux and requires Bubblewrap (`bwrap`) with user namespaces. Use a dedicated unprivileged service account. The sandbox supplies a fresh home and exposes only configured workspace paths plus explicit runtime-profile mounts; it does not guarantee secrecy from host administrators or unrelated host processes.
+
+### Required Linux runtime profile
+
+The sandbox has no general host-root bind. Before running agents, create the operator-owned,
+gitignored `config/runtime-profile.yaml` outside the repository worktree and verifier scratch directory.
+Its strict YAML shape is `version: 1`, `mounts: [{source, target}]`, and `commands: {name: mounted-file-target}`.
+Use normalized absolute paths. Mount only exact executable/library files and explicitly selected code-package
+directories; directory mounts are limited to selected package roots. Every command name must resolve to a
+mounted file. The profile and its sources must remain outside the target worktree and scratch directory.
+
+The sandbox creates a fresh `/home/factory` and derives `PATH` from mounted command targets. Host `HOME`,
+shell startup files, Git global/system configuration, and hooks are not inherited. The example profile does
+not configure native CLI cached authentication; host login is unavailable unless a specific auth file is
+explicitly mounted and validated in the sandbox. Only selected provider API-key variables and OpenCode flags
+are passed through.
+
+Git metadata is mounted only when `privacy.ignore_paths` is empty and no configured blocked path resolves
+inside the workspace. Protected runs receive no Git metadata, so repository-aware Git commands cannot read
+repository state; the Engine supplies scoped context and diff instead. Unprotected runs get only a scratch Git snapshot and
+read-only objects, refs, and packed refs. Repository config, hooks, alternates, and other worktree metadata
+are not exposed. Do not mount broad system directories or assume host configuration is visible.
+Runtime-profile-backed Linux acceptance remains pending; this setup does not imply a successful end-to-end run.
 
 ### Approval and current Phase 1 boundary
 
-For Local Markdown tickets, a human sets approval frontmatter after reviewing the latest `factory_plan` and matching `factory_plan_hash`; ticket author text is not authenticated identity. For GitHub, the adapter checks the actual comment account, exact `/approve`, the allowlist, and that approval follows the latest published plan. Prompts, plans, reports, and run metadata are stored outside the repository. Phase 1 ends at review and does not create worktrees, lock tickets, retry repairs, publish PRs, or notify users. The sandbox scopes children to the configured workspace and ignored paths; it does not guarantee secrecy from host administrators or unrelated host processes.
+For Local Markdown tickets, a human sets approval frontmatter after reviewing the latest `factory_plan` and matching `factory_plan_hash`; ticket author text is not authenticated identity. For GitHub, the adapter checks the actual comment account, exact `/approve`, the allowlist, and that approval follows the latest published plan. Prompts, plans, reports, and run metadata are stored outside the repository. Phase 1 ends at review and does not create worktrees, lock tickets, retry repairs, publish PRs, or notify users. The sandbox boundary is described in [Required Linux runtime profile](#required-linux-runtime-profile).
 
 ### Step 3: Configure Tracker, Approvers & Verification
 

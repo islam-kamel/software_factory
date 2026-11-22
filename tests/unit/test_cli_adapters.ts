@@ -27,6 +27,7 @@ it("routes Codex to the configured model with native read-only controls", () => 
 
   expect(invocation.cwd).toBe(request.workspace);
   expect(invocation.args).toContain("read-only");
+  expect(invocation.args).toContain("--skip-git-repo-check");
   expect(invocation.args).toContain("gpt-test");
   expect(invocation.args).toContain("project_doc_max_bytes=0");
 });

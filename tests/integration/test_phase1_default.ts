@@ -7,7 +7,7 @@
 // ============================================================
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -31,7 +31,7 @@ type Fixture = {
   repository: ResolvedRepository;
   tracker: ReturnType<typeof createLocalMarkdownTracker>;
 };
-type FactoryFilesInput = { root: string; config: string; repositoryPath: string; check: string };
+type FactoryFilesInput = { root: string; config: string; repositoryPath: string; check: string; fakeCli: string };
 
 async function git(args: string[], cwd?: string): Promise<void> {
   await execFile("git", args, { cwd });
@@ -50,8 +50,8 @@ async function makeFixture(check: string): Promise<Fixture> {
   await writeFile(join(repositoryPath, "AGENTS.md"), "Synthetic repository rules\n");
   await writeFile(join(repositoryPath, "README.md"), "base\n");
   await initializeGit(repositoryPath, workspace);
-  await writeFactoryFiles({ root, config: configDirectory, repositoryPath, check });
   await writeCli(fakeBin);
+  await writeFactoryFiles({ root, config: configDirectory, repositoryPath, check, fakeCli: join(fakeBin, "codex") });
   process.env.SOFTWARE_FACTORY_ROOT = root;
   process.env.PATH = `${fakeBin}:${originalPath ?? "/usr/bin:/bin"}`;
   const repository = makeRepository(repositoryPath, check);
@@ -73,7 +73,7 @@ async function initializeGit(repository: string, workspace: string): Promise<voi
 }
 
 async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
-  const { root, config, repositoryPath: repository, check } = input;
+  const { root, config, repositoryPath: repository, check, fakeCli } = input;
   await mkdir(join(root, "src/agents"), { recursive: true });
   const roles: Array<{ name: string; output: string; access: "read_only" | "read_write" }> = [
     { name: "planner", output: "PLAN.md", access: "read_only" },
@@ -91,6 +91,7 @@ async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
   }
   const route = { cli: "codex", provider: "openai", model: "test-model" };
   await writeFile(join(config, "factory.yaml"), stringify({ version: "1.0" }));
+  await writeRuntimeProfile(config, fakeCli);
   await writeFile(
     join(config, "models.yaml"),
     stringify({
@@ -116,6 +117,27 @@ async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
           verification: { secret_scan: check, lint: check, typecheck: check, test: check },
         },
       ],
+    }),
+  );
+}
+
+async function writeRuntimeProfile(config: string, fakeCli: string): Promise<void> {
+  const libraryDirectory = "/lib/aarch64-linux-gnu";
+  const files = [
+    ["/usr/bin/bash", "/bin/bash"],
+    ["/usr/bin/dash", "/bin/sh"],
+    [`${libraryDirectory}/libtinfo.so.6`, `${libraryDirectory}/libtinfo.so.6`],
+    [`${libraryDirectory}/libc.so.6`, `${libraryDirectory}/libc.so.6`],
+    ["/lib/ld-linux-aarch64.so.1", "/lib/ld-linux-aarch64.so.1"],
+    [fakeCli, "/runtime/codex"],
+  ] as const;
+  const mounts = await Promise.all(files.map(async ([source, target]) => ({ source: await realpath(source), target })));
+  await writeFile(
+    join(config, "runtime-profile.yaml"),
+    stringify({
+      version: 1,
+      mounts,
+      commands: { codex: "/runtime/codex", "/bin/bash": "/bin/bash", "/bin/sh": "/bin/sh" },
     }),
   );
 }
@@ -185,7 +207,7 @@ async function filesBelow(directory: string): Promise<string[]> {
 async function completeDefaultLifecycle(): Promise<void> {
   const fixture = await makeFixture("test -f generated.txt");
   const planned = await runPlan(fixture);
-  expect(planned.status).toBe("needs_approval");
+  expect(planned.status, planned.summary).toBe("needs_approval");
   const paused = await resume(fixture, planned.runFile);
   expect(paused.status).toBe("needs_approval");
   await approve(fixture, planned.planHash);

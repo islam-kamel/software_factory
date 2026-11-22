@@ -4,6 +4,7 @@
 
 # Private Factory Config (commit config/repos.example.yaml instead)
 config/repos.yaml
+config/runtime-profile.yaml
 
 # Idea Files
 .idea/

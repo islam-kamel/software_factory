@@ -6,9 +6,15 @@
 // API Doc : https://github.com/containers/bubblewrap
 // ============================================================
 import { spawn } from "node:child_process";
-import { readdir, realpath, stat } from "node:fs/promises";
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { lstat, readdir, realpath, stat } from "node:fs/promises";
+import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { isIgnoredPath } from "@/engine/context_builder";
+import {
+  assertRuntimeMountsOutside,
+  resolveRuntimeCommand,
+  type SandboxRuntimeProfile,
+} from "@/adapters/cli_runner/runtime_profile";
+import { prepareSandboxGit } from "@/adapters/cli_runner/sandbox_git";
 
 export type SandboxOptions = {
   workspace: string;
@@ -16,6 +22,8 @@ export type SandboxOptions = {
   access: "read_only" | "workspace_write";
   timeoutMs: number;
   scratchDirectory: string;
+  runtimeProfile: SandboxRuntimeProfile;
+  repository?: string;
   blockedPaths?: string[];
   env?: NodeJS.ProcessEnv;
 };
@@ -78,7 +86,28 @@ async function hiddenPaths(options: SandboxOptions, workspace: string): Promise<
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
     }
   }
-  return result;
+  const gitMetadata = await workspaceGitMetadata(workspace);
+  if (gitMetadata) result.push(gitMetadata);
+  return pruneHiddenDescendants(result);
+}
+
+function pruneHiddenDescendants(paths: HiddenPath[]): HiddenPath[] {
+  const directories = paths.filter((entry) => entry.isDirectory);
+  return paths.filter(
+    (entry) => !directories.some((directory) => directory.path !== entry.path && isInside(directory.path, entry.path)),
+  );
+}
+
+async function workspaceGitMetadata(workspace: string): Promise<HiddenPath | undefined> {
+  const gitPath = resolve(workspace, ".git");
+  try {
+    const details = await lstat(gitPath);
+    if (details.isSymbolicLink()) throw new Error("Workspace Git metadata cannot be a symlink");
+    return { path: gitPath, isDirectory: details.isDirectory() };
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+  }
+  return undefined;
 }
 
 type BwrapRequest = {
@@ -87,11 +116,14 @@ type BwrapRequest = {
   options: SandboxOptions;
   workspace: string;
   hidden: HiddenPath[];
+  runtimeProfile: SandboxRuntimeProfile;
+  gitMounts?: Array<{ source: string; target: string }>;
 };
 
 export function createBwrapArgs(request: BwrapRequest): string[] {
-  const { command, args, options, workspace, hidden } = request;
+  const { command, args, options, workspace, hidden, runtimeProfile, gitMounts = [] } = request;
   const scratch = options.scratchDirectory;
+  const resolvedCommand = resolveRuntimeCommand(runtimeProfile, command);
   const result = [
     "--die-with-parent",
     "--new-session",
@@ -101,26 +133,29 @@ export function createBwrapArgs(request: BwrapRequest): string[] {
     "--unshare-uts",
     "--cap-drop",
     "ALL",
-    "--ro-bind",
-    "/",
-    "/",
     "--dev",
     "/dev",
     "--proc",
     "/proc",
+    "--tmpfs",
+    "/tmp",
+    "--tmpfs",
+    "/home",
+    "--tmpfs",
+    "/home/factory",
     "--bind",
     scratch,
     scratch,
-    "--ro-bind",
-    workspace,
-    workspace,
   ];
+  for (const mount of runtimeProfile.mounts) result.push("--ro-bind", mount.source, mount.target);
+  for (const mount of gitMounts) result.push("--ro-bind", mount.source, mount.target);
+  result.push("--ro-bind", workspace, workspace);
   if (options.access === "workspace_write") result.push("--bind", workspace, workspace);
   for (const entry of hidden) {
     if (entry.isDirectory) result.push("--tmpfs", entry.path, "--remount-ro", entry.path);
     else result.push("--ro-bind", "/dev/null", entry.path);
   }
-  result.push("--", command, ...args);
+  result.push("--", resolvedCommand, ...args);
   return result;
 }
 
@@ -130,14 +165,74 @@ function appendOutput(current: string, chunk: Buffer): { value: string; overflow
   return { value: overflow ? next.slice(0, MAX_OUTPUT_BYTES) : next, overflow };
 }
 
+const forwardedEnvironment = new Set([
+  "GOOGLE_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENCODE_API_KEY",
+  "OPENCODE_DISABLE_PROJECT_CONFIG",
+  "OPENCODE_CONFIG_DIR",
+]);
+
 function safeEnvironment(options: SandboxOptions): NodeJS.ProcessEnv {
-  return {
-    PATH: process.env.PATH ?? "/usr/bin:/bin",
-    HOME: process.env.HOME,
-    LANG: process.env.LANG,
+  const path = [...new Set(Object.values(options.runtimeProfile.commands).map((target) => dirname(target)))].join(":");
+  const environment: NodeJS.ProcessEnv = {
+    PATH: path,
+    HOME: "/home/factory",
+    LANG: "C",
     TMPDIR: options.scratchDirectory,
-    ...options.env,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_CONFIG_SYSTEM: "/dev/null",
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "core.hooksPath",
+    GIT_CONFIG_VALUE_0: "/dev/null",
   };
+  for (const [key, value] of Object.entries(options.env ?? {})) {
+    if (forwardedEnvironment.has(key) && value !== undefined) environment[key] = value;
+  }
+  return environment;
+}
+
+async function gitSnapshot(options: SandboxOptions, workspace: string, scratch: string) {
+  if (!options.repository) return undefined;
+  return prepareSandboxGit({ workspace, repository: options.repository, scratchDirectory: scratch });
+}
+
+async function hasWorkspacePrivacyBoundary(options: SandboxOptions, workspace: string): Promise<boolean> {
+  if (options.ignorePaths.length > 0) return true;
+  for (const blockedPath of options.blockedPaths ?? []) {
+    if (!isAbsolute(blockedPath)) throw new Error("Invalid sandbox path");
+    if (isInside(workspace, resolve(blockedPath))) return true;
+    if (isInside(workspace, await canonicalPotentialPath(blockedPath))) return true;
+  }
+  return false;
+}
+
+async function canonicalPotentialPath(path: string): Promise<string> {
+  const missing: string[] = [];
+  let candidate = resolve(path);
+  while (true) {
+    try {
+      return resolve(await realpath(candidate), ...missing.reverse());
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      missing.push(basename(candidate));
+      candidate = parent;
+    }
+  }
+}
+
+function assertSandboxTimeout(timeoutMs: number): void {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) throw new Error("Invalid agent timeout");
+}
+
+function assertScratchBoundary(workspace: string, scratch: string): void {
+  if (isInside(workspace, scratch) || isInside(scratch, workspace))
+    throw new Error("Agent scratch directory must be outside the workspace");
+  if (!isInside("/tmp", scratch)) throw new Error("Agent scratch must be under /tmp for isolated execution");
 }
 
 type ProcessOptions = {
@@ -219,19 +314,29 @@ function runProcess(options: ProcessOptions): Promise<SandboxResult> {
 export async function runSandboxed(command: string, args: string[], options: SandboxOptions): Promise<SandboxResult> {
   if (process.platform !== "linux")
     throw new Error("Agent filesystem sandbox requires Linux with bubblewrap installed");
-  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new Error("Invalid agent timeout");
+  assertSandboxTimeout(options.timeoutMs);
   const workspace = await realpath(options.workspace);
   const scratch = await realpath(options.scratchDirectory);
-  if (isInside(workspace, scratch) || isInside(scratch, workspace))
-    throw new Error("Agent scratch directory must be outside the workspace");
+  assertScratchBoundary(workspace, scratch);
+  assertRuntimeMountsOutside({ profile: options.runtimeProfile, workspace, scratchDirectory: scratch });
   const readyOptions = { ...options, scratchDirectory: scratch };
   const hidden = await hiddenPaths(readyOptions, workspace);
-  const sandboxArgs = createBwrapArgs({ command, args, options: readyOptions, workspace, hidden });
+  const hasPrivacyBoundary = await hasWorkspacePrivacyBoundary(options, workspace);
+  const gitData = hasPrivacyBoundary ? undefined : await gitSnapshot(options, workspace, scratch);
+  const sandboxArgs = createBwrapArgs({
+    command,
+    args,
+    options: readyOptions,
+    workspace,
+    hidden,
+    runtimeProfile: options.runtimeProfile,
+    ...(gitData ? { gitMounts: gitData.mounts } : {}),
+  });
   return runProcess({
     command: "bwrap",
     args: sandboxArgs,
     cwd: workspace,
-    env: safeEnvironment(readyOptions),
+    env: { ...safeEnvironment(readyOptions), ...(gitData?.env ?? {}) },
     timeoutMs: options.timeoutMs,
   });
 }

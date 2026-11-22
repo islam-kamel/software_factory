@@ -7,7 +7,7 @@
 // ============================================================
 import { createHash, randomUUID } from "node:crypto";
 import { lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { AgentResult, Ticket, VerificationResult } from "@/engine/contracts";
 import type { ResolvedRepository } from "@/engine/config_schemas";
@@ -108,20 +108,38 @@ function hashText(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
+async function resolvePotentialPath(path: string): Promise<string> {
+  const missing: string[] = [];
+  let candidate = resolve(path);
+  while (true) {
+    try {
+      return resolve(await realpath(candidate), ...missing.reverse());
+    } catch (error) {
+      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+      const parent = dirname(candidate);
+      if (parent === candidate) throw error;
+      missing.push(basename(candidate));
+      candidate = parent;
+    }
+  }
+}
+
 async function createArtifactDirectory(options: {
   rootPath: string;
   workspacePath: string;
   repositoryId: string;
   ticketId: string;
 }): Promise<string> {
-  await mkdir(options.rootPath, { recursive: true });
-  const root = await realpath(options.rootPath);
   const workspace = await realpath(options.workspacePath);
+  const root = await resolvePotentialPath(options.rootPath);
   if (overlaps(root, workspace)) throw new Error("Agent artifacts must be outside the repository workspace");
-  const artifactPath = join(root, safeSegment(options.repositoryId), safeSegment(options.ticketId), randomUUID());
+  await mkdir(root, { recursive: true });
+  const actualRoot = await realpath(root);
+  if (overlaps(actualRoot, workspace)) throw new Error("Agent artifacts must be outside the repository workspace");
+  const artifactPath = join(actualRoot, safeSegment(options.repositoryId), safeSegment(options.ticketId), randomUUID());
   await mkdir(artifactPath, { recursive: true });
   const actual = await realpath(artifactPath);
-  if (!isInside(root, actual) || overlaps(actual, workspace)) throw new Error("Agent artifact path is unsafe");
+  if (!isInside(actualRoot, actual) || overlaps(actual, workspace)) throw new Error("Agent artifact path is unsafe");
   return actual;
 }
 
@@ -213,6 +231,38 @@ async function markFailed(options: SharedOptions, state: RunState, summary: stri
   return failure(state, summary);
 }
 
+async function failPlanningSetup(options: PlanTicketOptions, ticketId: string, reason: unknown): Promise<never> {
+  try {
+    await options.tracker.updateState({ ticketId, state: "ai_failed" });
+  } catch (stateError) {
+    throw new AggregateError([reason, stateError], "Planning setup failed and ticket state update also failed", {
+      cause: stateError,
+    });
+  }
+  throw reason;
+}
+
+async function preparePlanningRun(input: {
+  options: PlanTicketOptions;
+  ticket: Ticket;
+  workspace: string;
+  repositoryPath: string;
+}): Promise<{ outputDirectory: string; runFile: string; state: RunState }> {
+  const { options, ticket, workspace, repositoryPath } = input;
+  try {
+    const outputDirectory = await createArtifactDirectory({
+      rootPath: options.outputDirectory,
+      workspacePath: options.workspace,
+      repositoryId: options.repository.id,
+      ticketId: ticket.id,
+    });
+    const state = await createRunState({ options, ticket, outputDirectory, workspace, repositoryPath });
+    return { outputDirectory, runFile: join(outputDirectory, "run.json"), state };
+  } catch (error) {
+    return await failPlanningSetup(options, ticket.id, error);
+  }
+}
+
 async function launchAgent(
   options: SharedOptions,
   request: Omit<AgentRequest, "repoId" | "configDirectory">,
@@ -232,14 +282,8 @@ export async function planTicket(options: PlanTicketOptions): Promise<Orchestrat
   const workspace = await realpath(options.workspace);
   if (workspace !== repositoryPath) throw new Error("Planner must use the configured repository workspace");
   await options.tracker.updateState({ ticketId: ticket.id, state: "ai_planning" });
-  const outputDirectory = await createArtifactDirectory({
-    rootPath: options.outputDirectory,
-    workspacePath: options.workspace,
-    repositoryId: options.repository.id,
-    ticketId: ticket.id,
-  });
-  const runFile = join(outputDirectory, "run.json");
-  const placeholder = await createRunState({ options, ticket, outputDirectory, workspace, repositoryPath });
+  const setup = await preparePlanningRun({ options, ticket, workspace, repositoryPath });
+  const { outputDirectory, runFile, state: placeholder } = setup;
   try {
     const promptPath = await contextPrompt({
       repository: options.repository,
@@ -332,6 +376,7 @@ async function runBuilder(input: {
   state.phase = "running";
   await saveRunState(options.runFile, state);
   await options.tracker.updateState({ ticketId: ticket.id, state: "ai_approved" });
+  await options.tracker.updateState({ ticketId: ticket.id, state: "ai_building" });
   const promptPath = await contextPrompt({
     repository: options.repository,
     workspace,

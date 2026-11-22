@@ -6,6 +6,7 @@
 // API Doc : docs/implementation_plan.md, Deterministic Verifier
 // ============================================================
 import { runSandboxed, type SandboxResult } from "@/adapters/cli_runner/sandbox";
+import { loadSandboxRuntimeProfile, type SandboxRuntimeProfile } from "@/adapters/cli_runner/runtime_profile";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -14,10 +15,12 @@ import type { VerificationResult } from "@/engine/contracts";
 
 export type CheckStep = "secret_scan" | "lint" | "typecheck" | "test";
 export type CheckRunnerOptions = {
+  repository: string;
   workspace: string;
   ignorePaths: string[];
   timeoutMs: number;
   scratchDirectory: string;
+  runtimeProfile?: SandboxRuntimeProfile;
 };
 export type CheckRunner = (step: CheckStep, command: string, options: CheckRunnerOptions) => Promise<SandboxResult>;
 
@@ -26,15 +29,23 @@ export type VerifyOptions = {
   workspace: string;
   attempt?: number;
   timeoutMs?: number;
+  runtimeProfile?: SandboxRuntimeProfile;
 };
 
 const STEP_ORDER: CheckStep[] = ["secret_scan", "lint", "typecheck", "test"];
 const DEFAULT_TIMEOUT_MS = 15 * 60 * 1000;
 
 async function runCheck(step: CheckStep, command: string, options: CheckRunnerOptions): Promise<SandboxResult> {
+  const runtimeProfile = options.runtimeProfile;
+  if (!runtimeProfile) throw new Error("Sandbox runtime profile is required");
   return runSandboxed("/bin/bash", ["-euo", "pipefail", "-c", command], {
-    ...options,
+    repository: options.repository,
+    workspace: options.workspace,
+    ignorePaths: options.ignorePaths,
     access: "workspace_write",
+    timeoutMs: options.timeoutMs,
+    scratchDirectory: options.scratchDirectory,
+    runtimeProfile,
   });
 }
 
@@ -85,10 +96,42 @@ export function createVerifier(runner: CheckRunner = runCheck) {
     }
     const steps = configuredSteps(options.repository);
     if (steps.length === 0) return failedResult(attempt, "configuration", "No verification commands are configured");
-    return withScratch(options.workspace, (scratchDirectory) =>
-      runSteps({ runner, options, steps, attempt, timeoutMs, scratchDirectory }),
-    );
+    return executeVerification({ runner, options, steps, attempt, timeoutMs });
   };
+}
+
+async function executeVerification(input: {
+  runner: CheckRunner;
+  options: VerifyOptions;
+  steps: Array<{ step: CheckStep; command: string }>;
+  attempt: number;
+  timeoutMs: number;
+}): Promise<VerificationResult> {
+  const { runner, options, steps, attempt, timeoutMs } = input;
+  let runtimeProfile: SandboxRuntimeProfile | undefined;
+  try {
+    runtimeProfile = await verifierProfile(runner, options.runtimeProfile);
+  } catch {
+    return failedResult(attempt, "configuration", "Sandbox runtime profile is unavailable");
+  }
+  if (runner === runCheck && !runtimeProfile)
+    return failedResult(attempt, "configuration", "Sandbox runtime profile is unavailable");
+  return withScratch(options.workspace, (scratchDirectory) =>
+    runSteps({ runner, options, steps, attempt, timeoutMs, scratchDirectory, runtimeProfile }),
+  );
+}
+
+async function verifierProfile(
+  runner: CheckRunner,
+  configured?: SandboxRuntimeProfile,
+): Promise<SandboxRuntimeProfile | undefined> {
+  if (configured || runner !== runCheck) return configured;
+  const factoryRoot = resolve(process.env.SOFTWARE_FACTORY_ROOT ?? process.cwd());
+  try {
+    return await loadSandboxRuntimeProfile(resolve(factoryRoot, "config/runtime-profile.yaml"));
+  } catch {
+    return undefined;
+  }
 }
 
 async function runSteps(input: {
@@ -98,17 +141,20 @@ async function runSteps(input: {
   attempt: number;
   timeoutMs: number;
   scratchDirectory: string;
+  runtimeProfile: SandboxRuntimeProfile | undefined;
 }): Promise<VerificationResult> {
-  const { runner, options, steps, attempt, timeoutMs, scratchDirectory } = input;
+  const { runner, options, steps, attempt, timeoutMs, scratchDirectory, runtimeProfile } = input;
   for (const { step, command } of steps) {
     if (command.trim().length === 0) return failedResult(attempt, step, "Configured command is empty");
     let result: SandboxResult;
     try {
       result = await runner(step, command, {
+        repository: options.repository.local_path,
         workspace: options.workspace,
         ignorePaths: options.repository.privacy.ignore_paths ?? [],
         timeoutMs,
         scratchDirectory,
+        ...(runtimeProfile ? { runtimeProfile } : {}),
       });
     } catch {
       return failedResult(attempt, step, "Unable to start verification command");

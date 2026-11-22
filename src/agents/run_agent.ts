@@ -9,6 +9,7 @@ import { createAgyInvocation, parseAgyOutput } from "@/adapters/cli_runner/agy";
 import { createCodexInvocation, parseCodexOutput } from "@/adapters/cli_runner/codex";
 import { createOpenCodeInvocation, parseOpenCodeOutput } from "@/adapters/cli_runner/opencode";
 import { runSandboxed } from "@/adapters/cli_runner/sandbox";
+import { loadSandboxRuntimeProfile, type SandboxRuntimeProfile } from "@/adapters/cli_runner/runtime_profile";
 import { assertBuilderWorkspace, assertRepositoryWorkspace } from "@/adapters/cli_runner/workspace";
 import type { CliRequest } from "@/adapters/cli_runner/types";
 import { AgentResultSchema, type AgentResult } from "@/engine/contracts";
@@ -195,6 +196,7 @@ type PreparedAgentRun = {
   apiKey?: string;
   scratchDirectory: string;
   timeoutMs: number;
+  runtimeProfile: SandboxRuntimeProfile;
 };
 
 async function loadRepositoryConfig(options: RunAgentOptions, workspace: string) {
@@ -216,6 +218,7 @@ async function prepareAgentRun(options: RunAgentOptions): Promise<PreparedAgentR
   const workspace = await realpath(options.workspace);
   const config = await loadRepositoryConfig(options, workspace);
   const { root, configDirectory, loaded, repository } = config;
+  const runtimeProfile = await loadSandboxRuntimeProfile(resolve(root, "config/runtime-profile.yaml"));
   if (options.role === "builder") await assertBuilderWorkspace({ workspace, repository: repository.local_path });
   else await assertRepositoryWorkspace({ workspace, repository: repository.local_path });
 
@@ -250,6 +253,7 @@ async function prepareAgentRun(options: RunAgentOptions): Promise<PreparedAgentR
     ...(apiKey ? { apiKey } : {}),
     scratchDirectory,
     timeoutMs: timeoutMs(loaded.config.factory),
+    runtimeProfile,
   };
 }
 
@@ -274,9 +278,12 @@ async function executePreparedRun(options: RunAgentOptions, prepared: PreparedAg
     access: prepared.metadata.access === "read_only" ? "read_only" : "workspace_write",
     timeoutMs: request.timeoutMs,
     scratchDirectory: prepared.scratchDirectory,
+    runtimeProfile: prepared.runtimeProfile,
+    repository: prepared.repository.local_path,
     blockedPaths: [
       ...instructionFiles(prepared.repository, prepared.workspace),
       prepared.configDirectory,
+      prepared.runtimeProfile.path,
       dirname(prepared.resultFile),
     ],
     env: invocation.env,

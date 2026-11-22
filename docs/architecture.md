@@ -233,7 +233,7 @@ The context builder includes the selected root instruction file inline once, and
 
 ### Linux Runtime Boundary
 
-Production execution targets Linux and requires Bubblewrap (`bwrap`) with user namespaces. Run native CLIs under a dedicated unprivileged service account and home directory so cached CLI authentication is isolated from other service users. The sandbox limits the child to its configured repository workspace, masks ignored paths, and provides a scratch area; this is not a guarantee against a privileged host administrator or unrelated host processes. The caller supplies an `ai/` linked worktree; automatic worktree management is Phase 2.
+Production execution targets Linux and requires Bubblewrap (`bwrap`) with user namespaces and an operator-owned `config/runtime-profile.yaml` outside the worktree and scratch directory. The sandbox uses an empty controlled root, explicit file mounts and selected package-directory mounts, a fresh `/home/factory`, and a scratch area. It does not inherit host `HOME`, Git global/system configuration, or hooks. Git metadata is available only when there are no `privacy.ignore_paths` and no blocked paths inside the workspace; protected runs receive no repository Git metadata, and the Engine supplies context and diff. The unprotected exception exposes only a scratch Git snapshot and read-only objects, refs, and packed refs. Native cached-login behavior is not verified. Isolation does not guarantee secrecy from a privileged host administrator or unrelated host processes. The caller supplies an `ai/` linked worktree; automatic worktree management is Phase 2. See the [runtime profile setup](../INTEGRATION_GUIDE.md#required-linux-runtime-profile).
 
 ### Phase 1 Tracker and Artifacts
 

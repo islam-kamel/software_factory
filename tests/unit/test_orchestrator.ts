@@ -5,7 +5,7 @@
 // Role    : Unit Test
 // API Doc : docs/implementation_plan.md, Minimal Single-Ticket Orchestrator
 // ============================================================
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -156,6 +156,104 @@ it("runs Builder, verification and a fresh Reviewer after approval", async () =>
   expect(result.status).toBe("reviewed");
   expect(fixture.calls).toContain("builder");
   expect(fixture.calls).toContain("reviewer");
+});
+
+it("publishes ai_building before a running Builder begins", async () => {
+  const fixture = await makeOptions();
+  const planned = await planTicket(fixture.planOptions);
+  fixture.approve();
+  const originalRunner = fixture.resumeOptions.agentRunner;
+  let observedState = "";
+  let signalStarted: () => void = () => {};
+  let releaseBuilder: () => void = () => {};
+  const started = new Promise<void>((resolve) => {
+    signalStarted = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    releaseBuilder = resolve;
+  });
+  fixture.resumeOptions.agentRunner = async (input) => {
+    if (input.role === "builder") {
+      observedState = fixture.calls.at(-1) ?? "";
+      signalStarted();
+      await blocked;
+    }
+    return originalRunner(input);
+  };
+
+  const running = resumeTicket({ ...fixture.resumeOptions, runFile: planned.runFile });
+  await started;
+  expect(observedState).toBe("state:ai_building");
+  releaseBuilder();
+  expect((await running).status).toBe("reviewed");
+  expect(fixture.calls.indexOf("state:ai_approved")).toBeLessThan(fixture.calls.indexOf("state:ai_building"));
+  expect(fixture.calls.indexOf("state:ai_building")).toBeLessThan(fixture.calls.indexOf("state:verifying"));
+});
+
+it("marks planning failed when artifact setup fails after entering planning", async () => {
+  const fixture = await makeOptions();
+  fixture.planOptions.outputDirectory = join(fixture.planOptions.workspace, "runs");
+
+  await expect(planTicket(fixture.planOptions)).rejects.toThrow("Agent artifacts must be outside");
+  await expect(access(fixture.planOptions.outputDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(fixture.calls).toEqual(["state:ai_planning", "state:ai_failed"]);
+});
+
+it("rejects artifact roots reached through a symlink into the workspace", async () => {
+  const fixture = await makeOptions();
+  const linkedRoot = join(fixture.root, "repository-link");
+  await symlink(fixture.planOptions.workspace, linkedRoot);
+  fixture.planOptions.outputDirectory = join(linkedRoot, "runs");
+
+  await expect(planTicket(fixture.planOptions)).rejects.toThrow("Agent artifacts must be outside");
+  await expect(access(join(fixture.planOptions.workspace, "runs"))).rejects.toMatchObject({ code: "ENOENT" });
+  expect(fixture.calls).toEqual(["state:ai_planning", "state:ai_failed"]);
+});
+
+it("marks planning failed when run state setup fails after artifact creation", async () => {
+  const fixture = await makeOptions();
+  fixture.planOptions.factoryRoot = join(fixture.root, "missing-factory-root");
+
+  await expect(planTicket(fixture.planOptions)).rejects.toThrow();
+  expect(fixture.calls).toEqual(["state:ai_planning", "state:ai_failed"]);
+});
+
+it("preserves setup and tracker errors when both failures occur", async () => {
+  const fixture = await makeOptions();
+  const stateError = new Error("state store unavailable");
+  const updateState = fixture.planOptions.tracker.updateState;
+  fixture.planOptions.outputDirectory = join(fixture.planOptions.workspace, "runs");
+  fixture.planOptions.tracker.updateState = async (input) => {
+    if (input.state === "ai_failed") throw stateError;
+    return updateState(input);
+  };
+
+  let thrown: unknown;
+  try {
+    await planTicket(fixture.planOptions);
+  } catch (error) {
+    thrown = error;
+  }
+
+  expect(thrown).toBeInstanceOf(AggregateError);
+  if (thrown instanceof AggregateError) {
+    expect(thrown.errors).toHaveLength(2);
+    expect(thrown.errors[0]).toBeInstanceOf(Error);
+    expect(thrown.errors[1]).toBe(stateError);
+    expect(thrown.cause).toBe(stateError);
+  }
+});
+
+it("still marks an ordinary Planner failure after run state exists", async () => {
+  const fixture = await makeOptions();
+  fixture.planOptions.agentRunner = async () => {
+    throw new Error("Planner failed");
+  };
+
+  const result = await planTicket(fixture.planOptions);
+
+  expect(result.status).toBe("failed");
+  expect(fixture.calls).toContain("state:ai_failed");
 });
 
 it("stops before Reviewer when verification fails", async () => {

@@ -6,7 +6,7 @@ While `architecture.md` shows **what** the parts are, this document explains **h
 
 ## 1. End-to-End Execution Flow
 
-This sequence diagram shows the complete journey of a single ticket from creation to a ready-to-review **Draft PR**.
+This sequence diagram shows the Phase 1 ticket lifecycle through a reviewed outcome and the deferred Phase 2 delivery steps.
 
 ```mermaid
 sequenceDiagram
@@ -28,7 +28,7 @@ sequenceDiagram
 
     Dev->>TR: Review plan & reply "/approve"
     ENG->>TR: Lock status ("ai-building")
-    ENG->>ENG: Create isolated Git Worktree & new branch
+    ENG->>ENG: Validate caller-provided ai/ linked worktree
     ENG->>BL: Send PLAN.md + AGENTS.md
     BL-->>ENG: Write code & unit tests
 
@@ -44,9 +44,13 @@ sequenceDiagram
 
     ENG->>RV: Send git diff + Ticket (Fresh Context)
     RV-->>ENG: Return Review Report
-    ENG->>TR: Open Draft PR & set status ("ai-pr-ready")
-    ENG->>ENG: Clean up Git Worktree
-    ENG->>NT: Notify Developer: "Draft PR is ready for review!"
+    ENG->>TR: Record reviewed result ("ai_reviewing")
+
+    opt Phase 2 (deferred)
+        ENG->>TR: Open Draft PR & set status ("ai_pr_ready")
+        ENG->>ENG: Clean up factory-managed Git Worktree
+        ENG->>NT: Notify Developer that the Draft PR is ready
+    end
 ```
 
 ---
@@ -208,7 +212,7 @@ Never run autonomous AI agents without hard safety walls. This design enforces *
    - Max cost/budget cap set directly at the LLM provider dashboard.
 4. **Secret Isolation & Gitignored Config:** Keep `config/repos.yaml` in `.gitignore` and commit only `config/repos.example.yaml`. Inside `repos.yaml`, reference only environment variable names (`token_env: "FINTECH_GH_TOKEN"`); store actual keys in `.env` (gitignored) or encrypted CI Secrets, never in Git or prompt text.
 5. **Pre-Push Secret Scanning:** Include a local secret scanner (`gitleaks` or `trufflehog`) in `verification.secret_scan` so any accidental credential leak halts the Self-Healing Loop before `git push`.
-6. **Per-Repo Privacy & Fail-Closed LLM Routing:** Each repo in `config/repos.yaml` declares `privacy.data_classification` (`public` | `internal` | `confidential`), `privacy.ignore_paths` (`.env*`, `certs/**`, `*.key`), and `privacy.allow_cloud_llm`. If `allow_cloud_llm: false` and a cloud provider is accidentally configured, the Engine **must fail closed** and refuse to run.
+6. **Per-Repo Privacy & Fail-Closed LLM Routing:** Each repo in `config/repos.yaml` declares `privacy.data_classification` (`public` | `internal` | `confidential`), `privacy.ignore_paths` (`.env*`, `certs/**`, `*.key`), and `privacy.allow_cloud_llm`. If `allow_cloud_llm: false` and a cloud provider is accidentally configured, the Engine **must fail closed** and refuse to run. If `ignore_paths` is nonempty, or a blocked path resolves inside the workspace, the sandbox masks `.git` and omits raw Git metadata so `git show` cannot bypass workspace path protections; the Engine supplies scoped context and diff instead.
 7. **Protected Files & Context Layering Precedence:** Sensitive paths (`.env`, CI workflows, auth core, billing) are listed in `AGENTS.md` under **Do Not Touch** and `privacy.ignore_paths`, and `verifier` rejects diffs that modify forbidden files. When using `context.mode: "merge"`, factory rules take precedence over repo `AGENTS.md` on security and workflow, while repo `AGENTS.md` takes precedence on code style and architecture.
 
 ---
@@ -223,10 +227,10 @@ gantt
     dateFormat X
     axisFormat Phase %s
 
-    section Phase 1: MVP (Complete)
+    section Phase 1: MVP (Runtime profile acceptance pending)
     Local/GitHub trackers and three CLI routes :p1, 0, 1
     Context, verifier, and orchestration       :p2, 0, 1
-    Linux sandbox and real Agy lifecycle       :p3, 1, 2
+    Profile-backed Linux sandbox and real Agy :p3, 1, 2
 
     section Phase 2: Automation
     Git worktree workspace manager         :p5, 2, 3
@@ -239,6 +243,6 @@ gantt
     Parallel worktree execution            :p10, 5, 6
 ```
 
-- **Phase 1 (MVP, complete):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, Linux Bubblewrap verifier, and plan/approval/build/review lifecycle. One real Agy ticket passed; no PR is opened in Phase 1.
+- **Phase 1 (MVP, implementation complete; runtime-profile acceptance pending):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, verifier, and plan/approval/build/review lifecycle. A real Agy ticket passed with the prior sandbox boundary, but that run does not verify the required explicit runtime profile. Codex and OpenCode have no live-provider acceptance. Phase 1 does not open a PR.
 - **Phase 2 (Hands-Free):** Add `git worktree`, the `self_healing` 3-retry loop, and notifications.
 - **Phase 3 (True No-Lock-in Scale):** Connect multiple existing projects via `repos.yaml` and plug in a second LLM provider or local model to test hot-swapping.

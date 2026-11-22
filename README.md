@@ -10,7 +10,7 @@ A **vendor-neutral, Linux-first ticket workflow** that plans, implements, verifi
 - **Deterministic Verification:** Configured `secret_scan`, `lint`, `typecheck`, and `test` checks run in order and stop at the first failure. Automated repair retries are deferred.
 - **Linux Isolation:** Child commands run through Bubblewrap (`bwrap`) with user namespaces and scoped workspace access. The caller supplies a linked `ai/` worktree.
 - **Configurable CLI and Trackers:** OpenCode, Agy, and Codex runners plus Local Markdown and GitHub trackers are selected through configuration; OpenCode remains the default.
-- **Privacy & Fail-Closed Security:** Supports per-repo `ignore_paths`, pre-push secret scanning (`gitleaks`), Zero-Footprint external contexts, and `allow_cloud_llm: false` fail-closed routing to local models.
+- **Privacy & Fail-Closed Security:** Supports per-repo `ignore_paths`, pre-push secret scanning (`gitleaks`), Zero-Footprint external contexts, and `allow_cloud_llm: false` fail-closed routing. Protected runs receive no raw Git metadata.
 
 ---
 
@@ -30,7 +30,10 @@ flowchart LR
 
 ## Quick Start
 
-Development requires Node.js v26.13.1. Production execution requires Linux, Bubblewrap with user namespaces, and a dedicated unprivileged service account/home for native CLI cached authentication. Install the locked dependencies and run checks with:
+Development requires Node.js v26.13.1. Production execution requires Linux, Bubblewrap with user namespaces,
+a private `config/runtime-profile.yaml`, and a dedicated unprivileged service account. The sandbox uses an
+empty controlled root and fresh home; see the [runtime profile setup](INTEGRATION_GUIDE.md#required-linux-runtime-profile).
+Install the locked dependencies and run checks with:
 
 ```bash
 yarn install --frozen-lockfile
@@ -104,6 +107,6 @@ software_factory/
 
 ## Build Roadmap
 
-- **Phase 1 (MVP):** Complete. Local/GitHub trackers, OpenCode/Agy/Codex runners, context assembly, verifier, and plan/approval/build/review orchestration passed Linux acceptance, including one real Agy ticket lifecycle. Codex and OpenCode routes have adapter tests but were not live-tested.
+- **Phase 1 (MVP):** The implementation and prior Linux/Agy lifecycle are complete, but acceptance for the required explicit runtime profile is pending. The earlier Agy run used the previous sandbox boundary and does not verify the profile-backed runtime. Codex and OpenCode have adapter tests, not live-provider tests.
 - **Phase 2 (Automation):** Automatic worktree lifecycle, locking, self-healing retries, Draft PRs, and notifications.
 - **Phase 3 (Multi-Repo & Scale):** Multi-repo runner via `config/repos.yaml`, parallel worktrees, and local Ollama hot-swapping.

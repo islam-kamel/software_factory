@@ -14,6 +14,7 @@ export function createCodexInvocation(request: CliRequest): CliInvocation {
   const args = [
     "exec",
     "--ignore-user-config",
+    "--skip-git-repo-check",
     "--cd",
     request.workspace,
     "--sandbox",
