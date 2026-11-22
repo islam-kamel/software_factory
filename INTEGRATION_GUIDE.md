@@ -136,7 +136,9 @@ it did not create a PR or test a real operator's approval flow. Codex and OpenCo
 
 ### Approval and current Phase 1 boundary
 
-For Local Markdown tickets, a human sets approval frontmatter after reviewing the latest `factory_plan` and matching `factory_plan_hash`; ticket author text is not authenticated identity. The live lifecycle exercised this path with a synthetic allowed operator. For GitHub, the adapter checks the actual comment account, exact `/approve`, the allowlist, and that approval follows the latest published plan. Prompts, plans, reports, and run metadata are stored outside the repository. Phase 1 ends at review and does not create worktrees, lock tickets, retry repairs, publish PRs, or notify users. The sandbox boundary is described in [Required Linux runtime profile](#required-linux-runtime-profile).
+For Local Markdown tickets, a human sets approval frontmatter after reviewing the latest `factory_plan` and matching `factory_plan_hash`; ticket author text is not authenticated identity. The live Phase 1 lifecycle exercised this path with a synthetic allowed operator. For GitHub, the tracker checks the actual comment account, exact `/approve`, the allowlist, and that approval follows the latest published plan. Prompts, plans, reports, and run metadata are stored outside the repository.
+
+The legacy `planTicket` and `resumeTicket` APIs keep the Phase 1 contract: the caller supplies an `ai/` linked worktree to resume, and the lifecycle ends after review. They do not create managed worktrees, use Phase 2 ticket claims, publish Draft PRs, or send Phase 2 notifications. The managed APIs below add those behaviors. The sandbox boundary is described in [Required Linux runtime profile](#required-linux-runtime-profile).
 
 ### Step 3: Configure Tracker, Approvers & Verification
 
@@ -174,7 +176,7 @@ In GitHub/GitLab repository settings, enable **Branch Protection** on `main` and
 
 ### Step 6: Prepare Ticket Labels
 
-For GitHub discovery, create the `ai-ready` label. The remaining lifecycle labels and automatic ticket locking are deferred:
+For GitHub tracker discovery, create the `ai-ready` label. Tracker polling is not part of the managed API; a caller invokes it with a ticket ID. Managed calls claim the ticket before planning and use configured tracker state transitions:
 
 `ai-ready`
 
@@ -184,7 +186,7 @@ For GitHub discovery, create the `ai-ready` label. The remaining lifecycle label
 
 ### Mode A: Local Polling Runner (Recommended for Client Repos)
 
-Run the factory on a supported Linux host. Phase 1 uses a caller-provided linked `ai/` worktree; automatic worktree creation and tracker polling are deferred.
+Run the factory on a supported Linux host. Legacy Phase 1 calls use a caller-provided linked `ai/` worktree. Phase 2 callers invoke the managed API with a ticket ID; tracker polling remains outside this API.
 
 ### Mode B: CI / Reusable Workflow (GitHub Actions)
 
@@ -212,14 +214,62 @@ jobs:
 3. **Review and approve the plan:**
    - If the plan looks right, comment `/approve` (only users in `allowed_approvers` are accepted).
    - If changes are needed, reply with feedback and move the ticket back to `ai-planning`.
-4. **Build, verify, and review:** Provide a validated `ai/` linked worktree. The factory implements the approved plan, runs configured checks in order, then launches a fresh-context Reviewer. A failed check stops the lifecycle.
-5. **Inspect reviewed artifacts:** Review the external plan, verification, and reviewer artifacts before using a separate PR workflow.
+4. **Build, verify, and review:** With the legacy API, provide a validated `ai/` linked worktree. With the managed API, the factory creates a linked `ai/issue-<id>` worktree after it validates approval. Configured checks run in order; a failing check may invoke a repair Builder within the total attempt limit, then a fresh-context Reviewer runs.
+5. **Inspect the outcome:** Legacy calls return a reviewed outcome for a separate PR workflow. Managed calls verify the reviewed diff again, create a commit on the issue branch, recheck the committed snapshot, and open a Draft PR.
+
+## Managed Phase 2 Lifecycle
+
+The built `dist/orchestrator.js` entry exports `planManagedTicket` and `resumeManagedTicket`. The caller supplies a resolved repository, factory config, configured `TrackerAdapter`, factory root, and a trusted external run-artifact directory. `loadConfig` is available from `dist/config_loader.js`; the tracker instance remains part of the caller's adapter setup.
+
+Configure the global factory settings:
+
+```yaml
+adapters:
+  git_host: "github"
+  notifier: "console" # console | telegram | none
+limits:
+  max_self_heal_retries: 3 # Total verification attempts, including the first
+workspace:
+  use_worktree: true
+  worktree_root: "/var/lib/software-factory/worktrees"
+  draft_pr_only: true
+```
+
+Configure the managed repository and delivery requirements:
+
+```yaml
+base_branch: "main" # main, master, or develop is a read-only starting ref
+use_worktree: true
+draft_pr: true
+tracker:
+  provider: "local_md" # The ticket tracker may be Local Markdown or GitHub
+  repo: "your-org/your-repo" # Required GitHub destination for Draft delivery
+  token_env: "GITHUB_TOKEN" # Required GitHub token variable name, never a token value
+verification:
+  secret_scan: "gitleaks detect --source . --no-git"
+```
+
+`tracker.repo` and `tracker.token_env` are required for GitHub delivery even when the ticket tracker uses Local Markdown. The Git host must be `github`; the adapter pushes the verified commit to the configured GitHub origin and creates Draft PRs only. The plan, verification summary, and full Reviewer report are included in the PR body. Before pushing, the adapter checks that an existing PR for the branch is a Draft with the exact verified commit and report body, and rejects reports that exceed GitHub's supported body size. It refuses delivery without a configured secret-scan command and passing verification. Live GitHub delivery has not been accepted against a real repository.
+
+`workspace.worktree_root` must be absolute and outside both the target repository and factory artifacts. The engine resolves existing symlinked ancestors and validates the canonical path before creating directories. If the GitHub create-PR request has an uncertain response, the managed call returns `delivery_pending`, keeps the active ticket claim and committed branch, and removes only its owned worktree. A later resume stops before launching agents or contacting GitHub; manual inspection and reconciliation are required before any retry. The engine does not retry an uncertain create request automatically. If the Draft PR is known to exist but updating tracker state fails, the result keeps the PR URL and returns a tracker warning without reporting the run as failed.
+
+If the known receipt was saved and owned-worktree cleanup succeeded, a tracker read or `ai_pr_ready` update failure releases only the run's active execution while preserving its receipt and outer ticket claim. Resume using the same `runFile` reconciles `ai_reviewing` to `ai_pr_ready`, or accepts an already-ready ticket, then finishes the claim without repeating approval, agents, worktree creation, verification, commit, push, or PR creation. Any other ticket state requires manual reconciliation and is not overwritten. A live active execution stays protected; abandoned active state and crash, receipt-persistence, or cleanup uncertainty require operator inspection, with no automatic stale-claim takeover. Unknown PR creation remains `delivery_pending` and is never retried automatically.
+
+Plan first, then wait for a human to approve the exact plan hash through the configured tracker. Persist the returned `runFile` and pass it to `resumeManagedTicket` after approval. The plan and run artifacts live under the caller's trusted external `outputDirectory`. Verifier full logs, when produced, are stored under the run's `verification-logs` directory with private permissions; repair feedback uses a bounded parsed summary. Notifications contain only the ticket ID, repository ID, state, and Draft URL when available.
+
+The default notifier is console. Set `adapters.notifier: "telegram"` or the repository's `notifications.external.provider: "telegram"` to select Telegram; provide `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the runtime environment. Set `adapters.notifier: "none"` to disable notifications. Setting `notifications.external.enabled: false` selects console fallback unless the global notifier is `none`. Telegram delivery has mocked tests only, not live acceptance.
+
+Claims are filesystem-scoped to the canonical configured worktree root and coordinate processes sharing that root. They do not provide distributed multi-host locking or automatic stale-claim takeover. A crash can leave claim state behind; inspect the ticket, run artifacts, and matching worktree before operator recovery. Do not remove an active claim or force-remove a worktree without proving it belongs to the failed run.
+
+Managed worktrees use branch `ai/issue-<id>` from the configured base ref, including protected base branches as read-only starting points. Cleanup verifies the private ownership record and linked-worktree identity before removal. If ownership cannot be proven or cleanup fails, the run retains its worktree and reports a cleanup error for inspection. Git commit delivery refuses repositories with configured Git filters because executing arbitrary filters during staging is outside the supported safety boundary; review the repository's filter setup before enabling managed delivery.
+
+Phase 2 unit tests use synthetic local Git repositories and mocked HTTP. They do not establish live GitHub, Telegram, or complete managed Linux runtime acceptance. Phase 3 offline verification, network proxying, and sandbox resource caps remain deferred.
 
 ---
 
 ## 6. Troubleshooting & Guardrails
 
-- **Ticket marked `ai-failed`:** The self-healing circuit breaker tripped after `max_retries` (default `3`). Check the summary in `./logs/` or the ticket comment, clarify the ticket or fix the underlying environment issue, and re-apply `ai-ready`.
+- **Ticket marked `ai_failed`:** The managed retry limit was reached or a hard verification gate failed. `limits.max_self_heal_retries` is the total number of verification attempts (default `3`), so there can be at most two repair Builder runs. Inspect the bounded summary and the private `verification-logs` under the external run-artifact directory; do not copy raw logs into prompts or notifications.
 - **Engine refuses to start on a confidential repo:** Verify `privacy.allow_cloud_llm: false` is paired only with providers marked `is_local: true` in `config/models.yaml` (fail-closed behavior).
 - **Secret scan failure:** A secret or credential pattern was detected by `verification.secret_scan`. Remove the secret from the diff/test fixture before re-running.
 - **Avoid duplicate `AGENTS.md` context:** The context builder includes the selected root instruction inline once and runners disable CLI project auto-loading. Other repo instruction files are passed as safe path pointers; ignored paths are not read.
