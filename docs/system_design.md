@@ -219,7 +219,7 @@ Never run autonomous AI agents without hard safety walls. This design enforces *
 
 ## 7. Beginner Build Roadmap (Start Small!)
 
-Do not build every adapter on day one. Follow this 3-phase plan:
+Do not build every adapter on day one. Follow this 4-phase plan:
 
 ```mermaid
 gantt
@@ -230,19 +230,25 @@ gantt
     section Phase 1: MVP (Linux/Agy acceptance complete)
     Local/GitHub trackers and three CLI routes :p1, 0, 1
     Context, verifier, and orchestration       :p2, 0, 1
-    Profile-backed Linux sandbox and real Agy :p3, 1, 2
+    Profile-backed Linux sandbox and real Agy  :p3, 1, 2
 
     section Phase 2: Automation
-    Git worktree workspace manager         :p5, 2, 3
-    Self-healing 3-retry loop              :p6, 2, 4
-    Telegram or Discord notifier           :p7, 3, 4
+    Git worktree workspace manager             :p5, 2, 3
+    Self-healing 3-retry loop & diff guard     :p6, 2, 4
+    Draft PRs & Telegram/Discord notifier      :p7, 3, 4
 
-    section Phase 3: Multi-Repo & Scale
-    Add repos.yaml for existing projects   :p8, 4, 5
-    Add 2nd LLM provider (e.g. Ollama)     :p9, 4, 6
-    Parallel worktree execution            :p10, 5, 6
+    section Phase 3: Infra & Network Hardening
+    Offline verifier (--unshare-net)           :p8, 4, 5
+    Nginx LLM Egress Proxy & key isolation     :p9, 4, 6
+    Sandbox CPU/RAM/PID resource caps          :p10, 5, 6
+
+    section Phase 4: Multi-Repo & Scale
+    Multi-repo runner via repos.yaml           :p11, 6, 7
+    2nd LLM provider (Ollama) & telemetry      :p12, 6, 8
+    Parallel worktree execution & CI workflows :p13, 7, 8
 ```
 
 - **Phase 1 (MVP, acceptance complete):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, verifier, and plan/approval/build/review lifecycle. The profile-backed Linux sandbox checks and a real Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and did not open a PR. Codex and OpenCode have no live-provider acceptance. Phase 1 does not open a PR.
-- **Phase 2 (Hands-Free):** Add `git worktree`, the `self_healing` 3-retry loop, and notifications.
-- **Phase 3 (True No-Lock-in Scale):** Connect multiple existing projects via `repos.yaml` and plug in a second LLM provider or local model to test hot-swapping.
+- **Phase 2 (Hands-Free):** Add `git worktree`, atomic locking, the `self_healing` 3-retry loop, protected-file diff checks, Draft PRs, and notifications.
+- **Phase 3 (Infra & Network Hardening):** Isolate `verifier` with `--unshare-net`, deploy the outbound-only `infra/` Nginx LLM Egress Proxy to keep raw API keys out of sandboxes and enforce `allow_cloud_llm: false` at the network layer, and add CPU/RAM/PID caps.
+- **Phase 4 (True No-Lock-in Scale):** Connect multiple existing projects via `repos.yaml`, run parallel worktrees safely on top of Phase 3 hardening, track run costs, and plug in local Ollama or additional adapters to test hot-swapping.

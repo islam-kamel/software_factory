@@ -25,9 +25,10 @@ flowchart TB
     P0["Phase 0: Contracts, Config Loader & Fail-Closed Validator"]
     P1["Phase 1 (MVP): role.yaml, run.sh, 3 CLI runners, local/GitHub trackers, Context Builder, Verifier"]
     P2["Phase 2 (Automation): Git Worktrees, State Locking, Self-Healing Loop, Draft PR & Notifier"]
-    P3["Phase 3 (Multi-Repo & Scale): Parallel Runner, Ollama Local Swap, Cost Logs & CI Workflows"]
+    P3["Phase 3 (Infra & Network Hardening): Offline Verifier (--unshare-net), Nginx Egress Proxy, Resource Caps"]
+    P4["Phase 4 (Multi-Repo & Scale): Parallel Runner, Ollama Local Swap, Cost Logs & CI Workflows"]
 
-    P0 --> P1 --> P2 --> P3
+    P0 --> P1 --> P2 --> P3 --> P4
 ```
 
 ---
@@ -177,11 +178,57 @@ flowchart TB
 
 ---
 
-## Phase 3 — Multi-Repo, Local LLM Hot-Swap & Scale
+## Phase 3 — Infrastructure & Network Hardening (`infra/`)
 
-**Goal:** Run the factory across multiple brownfield and confidential repositories in parallel, prove zero vendor lock-in with a second provider/local model, and track run costs.
+**Goal:** Lock down the network, secret, and resource boundaries before scaling to multiple brownfield and confidential repositories in parallel.
 
-### 3.1 Multi-Repo Polling Runner & Parallel Execution
+### 3.1 Offline Verifier Network Isolation (`--unshare-net`)
+
+- **Files:**
+  - Update `src/adapters/cli_runner/sandbox.ts` and `src/self_healing/verifier.ts`
+- **Behavior:**
+  - Add an `offline?: boolean` option to `SandboxOptions` that appends `--unshare-net` to Bubblewrap arguments.
+  - Enable `offline: true` by default in `verifier.ts` so `secret_scan`, `lint`, `typecheck`, and `test` execute with zero host network access (relying on pre-installed dependencies/caches).
+
+### 3.2 Outbound LLM Egress Proxy (`infra/`)
+
+- **Files:**
+  - `infra/docker-compose.yml`
+  - `infra/nginx.conf`
+- **Behavior:**
+  - Run an outbound-only local `Nginx` Egress Proxy container on a dedicated loopback/internal interface.
+  - Inject provider LLM API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.) exclusively at the proxy layer, apply per-provider rate limits, and enforce `privacy.allow_cloud_llm: false` at the network boundary (allowing only local providers such as Ollama for confidential repositories).
+
+### 3.3 Egress Proxy Adapter & Sandbox Secret Removal
+
+- **Files:**
+  - `src/adapters/llm/egress_proxy.ts`
+  - Update `src/adapters/cli_runner/sandbox.ts`, `src/engine/config_schemas.ts`, and `src/engine/privacy_guard.ts`
+- **Behavior:**
+  - Route agent CLI LLM calls to the local `Nginx` Egress Proxy endpoint with repository privacy policy routing.
+  - Remove raw provider API keys from `forwardedEnvironment` in `sandbox.ts` when Egress Proxy mode is enabled so compromised code or tools inside `bwrap` cannot read or exfiltrate real credentials.
+
+### 3.4 Process & Resource Limits Hardening
+
+- **Files:**
+  - Update `src/adapters/cli_runner/sandbox.ts` and `config/factory.yaml`
+- **Behavior:**
+  - Enforce configurable CPU, memory, and PID limits (e.g., via `systemd-run --user --scope` or `prlimit`) alongside `agent_timeout_minutes` and `MAX_OUTPUT_BYTES`.
+
+### Phase 3 Acceptance Criteria
+
+- [ ] `verifier.ts` runs inside `bwrap --unshare-net`; unit/integration tests confirm outbound network calls from verification commands fail.
+- [ ] Agent sandboxes running in Egress Proxy mode contain zero raw provider API keys in `process.env` while successfully completing LLM requests through `infra/nginx.conf`.
+- [ ] A confidential repository (`allow_cloud_llm: false`) is blocked at both `privacy_guard.ts` and `infra/nginx.conf` if routed to a cloud provider.
+- [ ] CPU, memory, and PID caps terminate runaway verification or build processes cleanly without destabilizing the host.
+
+---
+
+## Phase 4 — Multi-Repo, Local LLM Hot-Swap & Scale
+
+**Goal:** Run the factory across multiple brownfield and confidential repositories in parallel on top of the hardened Phase 3 network boundary, prove zero vendor lock-in with a second provider/local model, and track run costs.
+
+### 4.1 Multi-Repo Polling Runner & Parallel Execution
 
 - **Files:**
   - `src/engine/runner.<ext>`
@@ -189,7 +236,7 @@ flowchart TB
   - Iterates over all `enabled: true` entries in `config/repos.yaml` every `polling_interval_seconds`.
   - Runs up to `limits.max_parallel_tasks` tickets concurrently in separate worktrees without Git lock contention.
 
-### 3.2 Local LLM Provider & Second Adapter Proof (Zero Vendor Lock-In)
+### 4.2 Local LLM Provider & Second Adapter Proof (Zero Vendor Lock-In)
 
 - **Files:**
   - `src/adapters/llm/ollama.<ext>` (or CLI runner config for `ollama-local`)
@@ -197,14 +244,14 @@ flowchart TB
 - **Verification:**
   - Run a full ticket on a test repo configured with `privacy.data_classification: "confidential"`, `privacy.allow_cloud_llm: false`, `context.mode: "factory_only"`, and `ollama-local`. Confirm zero external LLM network calls and zero files added to the target repo.
 
-### 3.3 Run History & Cost Telemetry
+### 4.3 Run History & Cost Telemetry
 
 - **Files:**
   - `src/engine/telemetry.<ext>`
 - **Behavior:**
   - Appends structured JSONL records (ticket ID, repo ID, role, provider, model, duration, tokens, `estimated_cost_usd`, final status) to `./logs/runs.jsonl` (sanitized of any secrets).
 
-### 3.4 Optional Cloud CI Reusable Workflows
+### 4.4 Optional Cloud CI Reusable Workflows
 
 - **Files:**
   - `.github/workflows/ai-plan.yml` (`on: workflow_call`)
@@ -212,7 +259,7 @@ flowchart TB
 - **Behavior:**
   - Allows personal GitHub repositories to connect via the 10-line caller workflow documented in [INTEGRATION_GUIDE.md](../INTEGRATION_GUIDE.md).
 
-### Phase 3 Acceptance Criteria
+### Phase 4 Acceptance Criteria
 
 - [ ] Two tickets across different repos (or the same repo) execute concurrently in separate worktrees without conflicts.
 - [ ] Confidential repo with `allow_cloud_llm: false` completes using `ollama-local` and fails closed if switched to a cloud provider.

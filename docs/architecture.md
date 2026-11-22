@@ -21,48 +21,55 @@ Here is the expanded version of your folder tree. Every folder has one clear job
 
 ```text
 software_factory/
-├── config/                         # Settings files (change tools here, not in code)
-│   ├── factory.yaml                # Global limits (max retries, active adapters)
-│   ├── models.yaml                 # Assigns which AI model runs each role
-│   ├── repos.example.yaml          # Committed template for connecting existing projects
-│   ├── repos.yaml                  # Your local project registry (gitignored for privacy)
-│   └── contexts/                   # Optional external AGENTS.md / extra rules for client repos
+├── config/                             # Settings files (change tools here, not in code)
+│   ├── factory.yaml                    # Global limits (max retries, active adapters)
+│   ├── models.yaml                     # Assigns which AI model runs each role
+│   ├── repos.example.yaml              # Committed template for connecting existing projects
+│   ├── repos.yaml                      # Your local project registry (gitignored for privacy)
+│   ├── runtime-profile.example.yaml    # Operator-owned Linux bwrap allowlist template
+│   ├── runtime-profile.yaml            # Local Linux bwrap mount/command closure (gitignored)
+│   └── contexts/                       # Optional external AGENTS.md / extra rules for client repos
 │
 ├── src/
-│   ├── agents/                     # AI roles and prompt instructions
-│   │   ├── planner/
-│   │   │   ├── prompt.md           # Rules for writing a safe plan (no coding)
-│   │   │   └── role.yaml           # Role settings (read-only, smart model)
-│   │   ├── builder/
-│   │   │   ├── prompt.md           # Rules for writing code and tests
-│   │   │   └── role.yaml           # Role settings (read/write, fast model)
-│   │   ├── reviewer/
-│   │   │   ├── prompt.md           # Rules for reviewing git diff vs ticket
-│   │   │   └── role.yaml           # Role settings (read-only, smart model)
-│   │   └── run.sh                  # Single entry point to launch any agent role
+│   ├── agents/                         # AI roles and prompt instructions
+│   │   ├── planner/                    # prompt.md + role.yaml (read-only)
+│   │   ├── builder/                    # prompt.md + role.yaml (read-write)
+│   │   ├── reviewer/                   # prompt.md + role.yaml (read-only)
+│   │   ├── run.sh                      # Shell entry point delegating to run_agent.ts
+│   │   └── run_agent.ts                # Resolves role/repo config, runs CLI inside bwrap, writes AgentResult
 │   │
-│   ├── engine/                     # The brain that runs the assembly line
-│   │   ├── orchestrator            # Runs steps in order (Plan -> Build -> Review)
-│   │   ├── state_manager           # Tracks ticket status and prevents double runs
-│   │   ├── workspace               # Creates & deletes isolated git worktrees
-│   │   └── context_builder         # Collects AGENTS.md + Ticket + Plan for the AI
+│   ├── engine/                         # Host Orchestration Layer (Trusted Zone)
+│   │   ├── config_loader.ts            # Loads & merges factory, models, and repo configs
+│   │   ├── config_schemas.ts           # Zod validation schemas for configs
+│   │   ├── contracts.ts                # Standard Ticket, AgentResult, and VerificationResult contracts
+│   │   ├── privacy_guard.ts            # Fail-closed check for privacy.allow_cloud_llm
+│   │   ├── context_builder.ts          # Collects AGENTS.md + Ticket + Plan + Diff
+│   │   ├── orchestrator.ts             # Runs planTicket & resumeTicket (Plan -> Build -> Verify -> Review)
+│   │   ├── state_manager.ts            # [Phase 2] Atomic ticket locking & full state machine
+│   │   └── workspace.ts                # [Phase 2] Automatic git worktree creation & cleanup
 │   │
-│   ├── self_healing/               # The automated test-and-fix loop
-│   │   ├── verifier                # Runs project checks (lint, tests, build)
-│   │   ├── error_parser            # Cleans huge error logs into short summaries
-│   │   └── retry_loop              # Limits fixes to max 3 tries to save money
+│   ├── self_healing/                   # Deterministic Quality Gate
+│   │   ├── verifier.ts                 # Runs secret_scan -> lint -> typecheck -> test in bwrap
+│   │   ├── error_parser.ts             # [Phase 2] Trims noisy terminal logs into focused failure summaries
+│   │   ├── retry_loop.ts               # [Phase 2] Caps self-healing retries (max 3) with circuit breaker
+│   │   └── protected_files_guard.ts    # [Phase 2] Blocks diffs touching .env, workflows, or ignore_paths
 │   │
-│   └── adapters/                   # Anti-Vendor-Lock-in Layer (Swappable Plugins)
-│       ├── llm/                    # OpenRouter, OpenCode, Copilot, Ollama, Local
-│       ├── cli_runner/             # OpenCode, Agy, and Codex CLIs
-│       ├── tracker/                # GitHub Issues and Local Markdown tickets
-│       ├── git_host/               # GitHub PR, GitLab MR, Bitbucket, Local Git
-│       └── notifier/               # Telegram, Discord, Slack, Email, Comments
+│   └── adapters/                       # Anti-Vendor-Lock-in Layer (Swappable Plugins)
+│       ├── cli_runner/                 # opencode.ts, agy.ts, codex.ts, sandbox.ts (bwrap),
+│       │                               # sandbox_git.ts, runtime_profile.ts, workspace.ts
+│       ├── tracker/                    # local_md.ts, github.ts (+ future GitLab/Jira)
+│       ├── git_host/                   # [Phase 2] github.ts (ai/ branch push + Draft PR only)
+│       ├── notifier/                   # [Phase 2] console.ts, telegram.ts (+ future Discord/Slack)
+│       └── llm/                        # [Phase 3 - Infra] egress_proxy.ts (outbound LLM gateway client)
+│
+├── infra/                              # [Phase 3 - Infra] Local Nginx Egress Proxy
+│   ├── docker-compose.yml              # Runs outbound-only LLM proxy container
+│   └── nginx.conf                      # Injects LLM API keys & enforces allow_cloud_llm routing
 │
 ├── templates/
-│   └── AGENTS.template.md          # Starter project guide for existing repos
+│   └── AGENTS.template.md              # Starter project guide for existing repos
 │
-└── logs/                           # Run history, error logs, and cost tracking
+└── logs/                               # Run history, error logs, and cost tracking
 ```
 
 > **Tip for Beginners:** You can write the files inside `engine/`, `self_healing/`, and `adapters/` using **Bash**, **Node.js (TypeScript)**, or **Python**. Because they talk through simple files and JSON, the design stays the same no matter which language you prefer.
@@ -120,6 +127,78 @@ flowchart TB
     SH --> WT2
 ```
 
+### 3.1 Phase 1 `bwrap` Architecture, Phase 2 Roadmap & Egress Proxy
+
+This diagram maps the **actual `src/` modules** after Phase 1 alongside planned Phase 2 automation and outbound Egress Proxy hardening:
+
+- **Green (`Done — Phase 0/1`):** Implemented in `src/` today.
+- **Orange (`Needs Hardening / Update`):** Implemented in Phase 1 and scheduled for specific hardening (`--unshare-net`, `retry_loop` wiring, or API key removal from sandbox env).
+- **Blue dashed (`Planned — Phase 2 & Phase 3 Infra`):** Remaining automation and network hardening modules.
+
+```mermaid
+---
+config:
+  layout: dagre
+---
+flowchart TB
+    subgraph SRC["src/ — Implemented bwrap Architecture, Phase 2 & Phase 3 Infra"]
+        subgraph ENG["src/engine/ (Host - Trusted Zone)"]
+            E_CFG["config_loader.ts, config_schemas.ts,<br/>privacy_guard.ts, contracts.ts [Done]"]
+            E_CTX["context_builder.ts [Done]"]
+            E_ORCH["orchestrator.ts<br/>[Phase 2] Wire retry_loop, state_manager & Draft PR"]
+            E_WS["workspace.ts<br/>[Phase 2] Create & cleanup git worktrees"]
+            E_STATE["state_manager.ts<br/>[Phase 2] Atomic locking & state machine"]
+        end
+
+        subgraph SH["src/self_healing/ (Quality Gate)"]
+            S_VER["verifier.ts<br/>[Phase 2/3] Diff Guard + offline: true"]
+            S_PARSE["error_parser.ts<br/>[Phase 2] Trim failure logs"]
+            S_LOOP["retry_loop.ts<br/>[Phase 2] max_retries=3 + Circuit Breaker"]
+            S_GUARD["protected_files_guard.ts<br/>[Phase 2] Reject protected/ignored diffs"]
+        end
+
+        subgraph ADP["src/adapters/ (Vendor-Neutral)"]
+            A_CLI["cli_runner/ (agy, codex, opencode,<br/>runtime_profile, sandbox_git, workspace) [Done]"]
+            A_SBX["cli_runner/sandbox.ts (Linux bwrap)<br/>[Phase 3] Add --unshare-net & drop raw API keys from env"]
+            A_TRK["tracker/ (local_md.ts, github.ts) [Done]"]
+            A_GIT["git_host/github.ts<br/>[Phase 2] Push ai/ branch & Draft PR only"]
+            A_NOTIF["notifier/ (console.ts, telegram.ts)<br/>[Phase 2] Developer alerts"]
+            A_EGRESS["llm/egress_proxy.ts + infra/nginx.conf<br/>[Phase 3 - Infra] Inject LLM keys & enforce allow_cloud_llm"]
+        end
+
+        subgraph AGT["src/agents/"]
+            G_RUN["run.sh, run_agent.ts &<br/>planner/builder/reviewer (prompt.md, role.yaml) [Done]"]
+        end
+    end
+
+    E_CFG & E_CTX --> E_ORCH
+    E_ORCH <--> E_STATE
+    E_ORCH --> E_WS
+    E_ORCH <--> A_TRK
+    E_ORCH --> A_GIT & A_NOTIF
+
+    E_ORCH --> G_RUN
+    G_RUN --> A_CLI
+    A_CLI --> A_SBX
+    A_SBX -.->|"Outbound LLM Calls Only (No Keys in Sandbox)"| A_EGRESS
+
+    E_ORCH <--> S_LOOP
+    S_LOOP --> E_STATE
+    S_LOOP --> S_VER
+    S_VER -->|"offline: true (--unshare-net)"| A_SBX
+    S_VER --> S_GUARD
+    S_VER --> S_PARSE
+    S_PARSE --> S_LOOP
+
+    classDef Done fill:#E8F5E9,stroke:#2E7D32,color:#000000
+    classDef Update fill:#FFF3E0,stroke:#EF6C00,stroke-width:2px,color:#000000
+    classDef Next fill:#E3F2FD,stroke:#1565C0,stroke-width:2px,stroke-dasharray:5 5,color:#000000
+
+    class E_CFG,E_CTX,A_CLI,A_TRK,G_RUN Done
+    class E_ORCH,S_VER,A_SBX Update
+    class E_WS,E_STATE,S_PARSE,S_LOOP,S_GUARD,A_GIT,A_NOTIF,A_EGRESS Next
+```
+
 ---
 
 ## 4. Deep Dive Into Each Module
@@ -146,9 +225,10 @@ Instead of hardcoding prompts inside scripts, each worker lives in its own folde
 
 ### C. `src/self_healing/` (Quality Control)
 
-- **`verifier`**: Runs configured `secret_scan`, `lint`, `typecheck`, and `test` commands in order inside the Linux Bubblewrap sandbox and stops on the first failure.
-- **`error_parser`**: Terminal errors can be thousands of lines long. This module cuts out noise and extracts only the relevant failing lines and file paths.
-- **`retry_loop`**: Planned Phase 2 behavior. Phase 1 stops after the first failed verifier step.
+- **`verifier.ts`**: Runs configured `secret_scan`, `lint`, `typecheck`, and `test` commands in order inside the Linux Bubblewrap sandbox and stops on the first failure. Planned hardening adds `--unshare-net` (`offline: true`) so verification runs without host network access.
+- **`error_parser.ts`** *(Phase 2)*: Terminal errors can be thousands of lines long. This module cuts out noise and extracts only the relevant failing lines and file paths.
+- **`retry_loop.ts`** *(Phase 2)*: Loops failed verifier output back to `Builder` up to `max_self_heal_retries` (default `3`) before tripping the circuit breaker. Phase 1 stops after the first failed verifier step.
+- **`protected_files_guard.ts`** *(Phase 2)*: Inspects the resulting diff before `git push` and blocks changes to `.env*`, `.github/workflows/*`, or configured `privacy.ignore_paths`.
 
 ### D. `src/adapters/` (How We Avoid Vendor Lock-in)
 
@@ -234,6 +314,11 @@ The context builder includes the selected root instruction file inline once, and
 ### Linux Runtime Boundary
 
 Production execution targets Linux and requires Bubblewrap (`bwrap`) with user namespaces and an operator-owned `config/runtime-profile.yaml` outside the worktree and scratch directory. The sandbox uses an empty controlled root, explicit file mounts and selected package-directory mounts, a fresh `/home/factory`, and a scratch area. It does not inherit host `HOME`, Git global/system configuration, or hooks. Git metadata is available only when there are no `privacy.ignore_paths` and no blocked paths inside the workspace; protected runs receive no repository Git metadata, and the Engine supplies context and diff. The unprotected exception exposes only a scratch Git snapshot and read-only objects, refs, and packed refs. Native cached-login behavior is not verified. Isolation does not guarantee secrecy from a privileged host administrator or unrelated host processes. The caller supplies an `ai/` linked worktree; automatic worktree management is Phase 2. See the [runtime profile setup](../INTEGRATION_GUIDE.md#required-linux-runtime-profile).
+
+**Planned Security Hardening (Network & Egress Boundary):**
+
+- **Offline Verification (`--unshare-net`):** Phase 1 `bwrap` runs do not yet unshare the network namespace. Adding an `offline: true` mode in `src/adapters/cli_runner/sandbox.ts` for `src/self_healing/verifier.ts` will disable all network access during `secret_scan`, `lint`, `typecheck`, and `test`.
+- **Outbound LLM Egress Proxy (`Nginx`):** Currently `sandbox.ts` forwards selected provider API keys (`GOOGLE_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`) into the sandbox environment. Routing outbound LLM calls through a local outbound-only `Nginx` Egress Proxy (`infra/nginx.conf` + `src/adapters/llm/egress_proxy.ts`) keeps real API keys out of agent sandboxes, applies rate limits, and enforces `privacy.allow_cloud_llm: false` at the network boundary (allowing only local providers such as Ollama for confidential repositories).
 
 ### Phase 1 Tracker and Artifacts
 
