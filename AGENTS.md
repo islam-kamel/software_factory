@@ -8,7 +8,7 @@ For architectural details and data contracts, refer to [docs/architecture.md](do
 
 ## Tech Stack
 
-- **Purpose:** A vendor-neutral Linux-first AI Software Factory that plans, builds, verifies, and reviews scoped tickets through swappable adapters; Draft PR delivery is deferred beyond Phase 1.
+- **Purpose:** A vendor-neutral Linux-first AI Software Factory with a legacy caller-worktree API and managed Phase 2 planning, verification, Draft PR, and notification APIs.
 - **Language / Runtime:** TypeScript 6.0.2 / Node.js v26.13.1 / Shell (Bash)
 - **Framework & Key Libraries:** Lightweight CLI/engine architecture (no heavy web framework); `yaml@2.9.1` (YAML config parsing), `zod@4.6.7` (runtime schema validation for configs and JSON contracts), `vitest@5.1.1` (unit & integration tests), `eslint@10.15.0` + `prettier@3.10.1` (linting & formatting), `gitleaks` (pre-push secret scanning), `vite@8.3.7` (complier)
 - **Package Manager:** Yarn
@@ -28,7 +28,7 @@ docs/               # Architecture and system design specifications
 logs/               # Runtime logs and cost/run history (never commit sensitive output)
 ```
 
-Production child execution requires Linux Bubblewrap (`bwrap`) with user namespaces. Use a dedicated unprivileged service account and home directory for native CLI cached authentication. Phase 1 requires the caller to provide an `ai/` linked worktree; automatic worktree management, retries, PR creation, and notifications are deferred.
+Production child execution requires Linux Bubblewrap (`bwrap`) with user namespaces. Use a dedicated unprivileged service account and home directory for native CLI cached authentication. Legacy Phase 1 calls use a caller-provided `ai/` linked worktree. Managed Phase 2 calls require an absolute `worktree_root`, resolve symlinked ancestors before directory creation, create an `ai/issue-<id>` worktree after approval, claim tickets under one canonical local root shared by participating processes, and support up to three total verification attempts by default. Phase 2 delivery creates Draft PRs containing the full Reviewer report in the PR body. An uncertain PR creation response remains `delivery_pending` and requires manual reconciliation; creation is not automatically retried. Full verifier logs are kept in private external run directories; cleanup verifies ownership before removal. A crash or failed ownership check requires operator inspection and recovery. Claims do not coordinate across independent hosts or automatically take over stale state.
 
 ---
 

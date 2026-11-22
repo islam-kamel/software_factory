@@ -16,6 +16,7 @@ import { createVerifier, type VerifyOptions } from "@/self_healing/verifier";
 import { assertBuilderWorkspace, getWorkspaceDiff } from "@/adapters/cli_runner/workspace";
 import { runAgent } from "@/agents/run_agent";
 import type { TrackerAdapter } from "@/adapters/tracker/types";
+import { runVerificationLoop } from "@/self_healing/retry_loop";
 
 type Role = "planner" | "builder" | "reviewer";
 export type AgentRequest = {
@@ -41,6 +42,8 @@ type RunState = {
   planFile: string;
   planHash: string;
   phase: RunPhase;
+  reviewFile?: string | undefined;
+  reviewedDiffHash?: string | undefined;
 };
 
 const RunStateSchema = z
@@ -55,6 +58,11 @@ const RunStateSchema = z
     planFile: z.string().min(1),
     planHash: z.string().regex(/^[a-f\d]{64}$/i),
     phase: z.enum(["needs_approval", "running", "reviewed", "failed"]),
+    reviewFile: z.string().min(1).optional(),
+    reviewedDiffHash: z
+      .string()
+      .regex(/^[a-f\d]{64}$/i)
+      .optional(),
   })
   .strict();
 
@@ -78,6 +86,9 @@ export type ResumeTicketOptions = SharedOptions & {
   runFile: string;
   factoryRoot: string;
   builderWorkspace: string;
+  maxAttempts?: number;
+  baseBranch?: string;
+  logDirectory?: string;
 };
 
 export type OrchestrationResult = {
@@ -87,6 +98,8 @@ export type OrchestrationResult = {
   runFile: string;
   summary?: string;
   approver?: string;
+  reviewFile?: string | undefined;
+  reviewedDiffHash?: string | undefined;
 };
 
 function isInside(root: string, path: string): boolean {
@@ -188,6 +201,10 @@ async function loadRunState(path: string): Promise<RunState> {
     throw new Error("Run state paths escape their safe directories");
   }
   return { ...state.data, outputDirectory: output, planFile, workspace };
+}
+
+export async function getRunState(runFile: string): Promise<Readonly<RunState>> {
+  return loadRunState(runFile);
 }
 
 async function contextPrompt(options: {
@@ -365,6 +382,8 @@ export async function resumeTicket(options: ResumeTicketOptions): Promise<Orches
   }
 }
 
+export { planManagedTicket, resumeManagedTicket } from "@/engine/automation";
+
 async function runBuilder(input: {
   options: ResumeTicketOptions;
   state: RunState;
@@ -377,6 +396,17 @@ async function runBuilder(input: {
   await saveRunState(options.runFile, state);
   await options.tracker.updateState({ ticketId: ticket.id, state: "ai_approved" });
   await options.tracker.updateState({ ticketId: ticket.id, state: "ai_building" });
+  await runBuilderAgent({ options, state, ticket, plan, workspace });
+}
+
+async function runBuilderAgent(input: {
+  options: ResumeTicketOptions;
+  state: RunState;
+  ticket: Ticket;
+  plan: string;
+  workspace: string;
+}): Promise<void> {
+  const { options, state, ticket, plan, workspace } = input;
   const promptPath = await contextPrompt({
     repository: options.repository,
     workspace,
@@ -396,18 +426,36 @@ async function runBuilder(input: {
   await agentOutput(result, agentDirectory);
 }
 
-async function verifyBuild(
-  options: ResumeTicketOptions,
-  ticket: Ticket,
-  workspace: string,
-): Promise<VerificationResult> {
+async function repairBuild(input: {
+  options: ResumeTicketOptions;
+  state: RunState;
+  ticket: Ticket;
+  plan: string;
+  workspace: string;
+  failure: VerificationResult;
+}): Promise<void> {
+  const { options, state, ticket, plan, workspace, failure: verification } = input;
+  await options.tracker.updateState({ ticketId: ticket.id, state: "ai_building" });
+  const repairPlan = `${plan}\n\n## Verification diagnostics\n\n${verification.failed_step}: ${verification.summary}`;
+  await runBuilderAgent({ options, state, ticket, plan: repairPlan, workspace });
+}
+
+async function verifyBuild(input: {
+  options: ResumeTicketOptions;
+  ticket: Ticket;
+  workspace: string;
+  attempt: number;
+}): Promise<VerificationResult> {
+  const { options, ticket, workspace, attempt } = input;
   await options.tracker.updateState({ ticketId: ticket.id, state: "verifying" });
   const verify = options.verifier ?? createVerifier();
   return verify({
     repository: options.repository,
     workspace,
-    attempt: 1,
+    attempt,
     timeoutMs: options.timeoutMs ?? 15 * 60 * 1000,
+    ...(options.baseBranch ? { baseBranch: options.baseBranch } : {}),
+    ...(options.logDirectory ? { logDirectory: options.logDirectory } : {}),
   });
 }
 
@@ -422,7 +470,7 @@ async function runReviewer(input: {
   const diff = await getWorkspaceDiff({
     workspace,
     ignorePaths: options.repository.privacy.ignore_paths ?? [],
-    baseBranch: options.repository.base_branch ?? "main",
+    baseBranch: options.baseBranch ?? options.repository.base_branch ?? "main",
   });
   await options.tracker.updateState({ ticketId: ticket.id, state: "ai_reviewing" });
   const promptPath = await contextPrompt({
@@ -443,6 +491,8 @@ async function runReviewer(input: {
     outputDirectory: agentDirectory,
   });
   const report = await agentOutput(result, agentDirectory);
+  state.reviewFile = report.path;
+  state.reviewedDiffHash = hashText(diff);
   return reviewVerdict(report.content);
 }
 
@@ -458,7 +508,11 @@ async function runApprovedTicket(input: {
   await assertBuilderWorkspace({ workspace: options.builderWorkspace, repository: state.repositoryPath });
   const workspace = await realpath(options.builderWorkspace);
   await runBuilder({ options, state, ticket, plan, workspace });
-  const verified = await verifyBuild(options, ticket, workspace);
+  const verified = await runVerificationLoop({
+    maxAttempts: options.maxAttempts ?? 1,
+    verify: (attempt) => verifyBuild({ options, ticket, workspace, attempt }),
+    repair: (verification) => repairBuild({ options, state, ticket, plan, workspace, failure: verification }),
+  });
   if (!verified.passed)
     return markFailed(options, state, `Verification failed at ${verified.failed_step}: ${verified.summary}`);
   const verdict = await runReviewer({ options, state, ticket, plan, workspace });
@@ -470,5 +524,13 @@ async function runApprovedTicket(input: {
     return markFailed(options, state, "Reviewer report has no single valid verdict");
   state.phase = "reviewed";
   await saveRunState(options.runFile, state);
-  return { status: "reviewed", ticketId: ticket.id, planHash: state.planHash, runFile: options.runFile, approver };
+  return {
+    status: "reviewed",
+    ticketId: ticket.id,
+    planHash: state.planHash,
+    runFile: options.runFile,
+    approver,
+    ...(state.reviewFile ? { reviewFile: state.reviewFile } : {}),
+    ...(state.reviewedDiffHash ? { reviewedDiffHash: state.reviewedDiffHash } : {}),
+  };
 }

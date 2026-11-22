@@ -14,7 +14,7 @@ The repository foundation, documentation, config templates, and agent prompts ar
 - **Configuration & Contexts:** `.env.example`, `.gitignore`, `config/factory.yaml`, `config/models.yaml`, `config/repos.example.yaml`, `config/contexts/global-factory-rules.md`, `templates/AGENTS.template.md`
 - **Agent Prompts:** `src/agents/planner/prompt.md`, `src/agents/builder/prompt.md`, `src/agents/reviewer/prompt.md`
 - **Phase 0 Complete:** Config loading and schemas in `src/engine/config_loader.ts` and `src/engine/config_schemas.ts`, privacy checks in `src/engine/privacy_guard.ts`, contracts in `src/engine/contracts.ts`, and unit tests under `tests/unit/`.
-- **Remaining Implementation:** Phase 1 acceptance is complete. Phase 2 and later items below remain deferred.
+- **Remaining Implementation:** Phase 1 acceptance and Phase 2 implementation with automated acceptance are complete. Fresh combined Linux verification and independent review passed. Live GitHub and Telegram factory acceptance is a separate operational follow-up; Phase 3 and later remain deferred.
 
 ---
 
@@ -24,7 +24,7 @@ The repository foundation, documentation, config templates, and agent prompts ar
 flowchart TB
     P0["Phase 0: Contracts, Config Loader & Fail-Closed Validator"]
     P1["Phase 1 (MVP): role.yaml, run.sh, 3 CLI runners, local/GitHub trackers, Context Builder, Verifier"]
-    P2["Phase 2 (Automation): Git Worktrees, State Locking, Self-Healing Loop, Draft PR & Notifier"]
+    P2["Phase 2 (Automation): Implemented, automated acceptance complete"]
     P3["Phase 3 (Infra & Network Hardening): Offline Verifier (--unshare-net), Nginx Egress Proxy, Resource Caps"]
     P4["Phase 4 (Multi-Repo & Scale): Parallel Runner, Ollama Local Swap, Cost Logs & CI Workflows"]
 
@@ -121,60 +121,70 @@ flowchart TB
 
 ## Phase 2 — Hands-Free Automation (Isolation, Self-Healing & Draft PRs)
 
-**Goal:** Make the factory safe to run unattended with Git worktree isolation, atomic ticket locking, a 3-retry self-healing loop, protected-file diff checks, Draft PR creation, and developer alerts.
+**Goal:** Automate an approved ticket with isolated worktrees, local atomic claims, up to three total verification attempts by default, protected-file checks, Draft-only PR delivery, and minimal developer notifications.
 
 ### 2.1 Git Worktree Workspace Manager
 
 - **Files:**
-  - `src/engine/workspace.<ext>`
+  - `src/engine/workspace.ts`
+  - `src/adapters/git_host/workspace.ts`
 - **Behavior:**
   - Creates isolated worktree at `${worktree_root}/<repo-id>-issue-<id>` on branch `ai/issue-<id>` branched from `base_branch`.
-  - **Hard guard:** Rejects any attempt to checkout, commit, or push to `main`, `master`, or `develop`.
-  - Guarantees worktree cleanup (`git worktree remove --force`) on completion or failure.
+  - Starts `ai/issue-<id>` from the configured base ref; `main`, `master`, and `develop` are allowed as read-only starting refs.
+  - Removes only a worktree whose private ownership record, Git common directory, branch, and path still match. If proof fails, retain it for operator inspection rather than force-removing an unverified path.
 
 ### 2.2 Ticket State Machine & Locking
 
 - **Files:**
-  - `src/engine/state_manager.<ext>`
+  - `src/engine/state_manager.ts`
 - **Behavior:**
   - Implements exact transitions from `docs/system_design.md`: `ai_ready` -> `ai_planning` -> `needs_approval` -> `ai_approved` -> `ai_building` -> `verifying` -> `ai_reviewing` -> `ai_pr_ready` (or `ai_failed`).
-  - Atomically locks a ticket (`ai_ready` -> `ai_planning`) before launching any agent so concurrent runs never double-pick a ticket.
+  - Claims are coordinated under the canonical configured worktree root for processes sharing that filesystem. They do not provide distributed multi-host locking or automatic stale-claim takeover. A crash may require operator inspection of the claim, ticket, artifacts, and matching worktree before recovery.
 
 ### 2.3 Error Parser & Self-Healing Retry Loop
 
 - **Files:**
-  - `src/self_healing/error_parser.<ext>` — Strips timestamps, ANSI codes, and noisy stack frames, returning only failing test names, file paths, line numbers, and error messages.
-  - `src/self_healing/retry_loop.<ext>` — Loops `Verifier` -> `Error Parser` -> `Builder` up to `max_retries` (default `3`). On circuit-breaker trip, saves full logs to `./logs/`, marks ticket `ai_failed`, and triggers notifier.
+  - `src/self_healing/error_parser.ts` — Strips terminal noise while retaining useful diagnostics in a bounded summary.
+  - `src/self_healing/retry_loop.ts` — Runs at most `limits.max_self_heal_retries` verification attempts (default `3` total, including the first). This allows at most two repair Builder runs. Full check output is saved under the caller's external run directory with private file permissions; only a bounded parsed summary is passed for repair.
 
 ### 2.4 Protected Files & Ignore-Paths Diff Gate
 
 - **Files:**
-  - Update `src/self_healing/verifier.<ext>`
+  - `src/self_healing/verifier.ts`
+  - `src/adapters/git_host/workspace.ts`
 - **Behavior:**
-  - Inspects `git diff --name-only <base_branch>...HEAD` before pushing.
-  - Fails verification if any modified file matches `privacy.ignore_paths` or protected paths (`.env*`, `.github/workflows/*`, etc.) unless explicitly allowed.
+  - Checks committed, staged, unstaged, untracked, and matching ignored paths against `privacy.ignore_paths` and protected paths such as `.env*`, `.github/workflows/**`, and `config/repos.yaml`.
+  - Resolves a configured branch or full base commit ID to an immutable commit before diffing; invalid refs and paths escaping the worktree fail closed.
 
 ### 2.5 Git Host Adapter (Draft PR Only)
 
 - **Files:**
-  - `src/adapters/git_host/github.<ext>`
+  - `src/engine/automation.ts`
+  - `src/engine/automation_delivery.ts`
+  - `src/adapters/git_host/delivery_git.ts`
+  - `src/adapters/git_host/github.ts`
 - **Behavior:**
-  - Verifies branch starts with `ai/` and `verification.secret_scan` passed before pushing.
-  - Opens a **Draft PR** (`draft: true`) containing ticket reference, `PLAN.md` summary, `VerificationResult`, and Reviewer report.
+  - Commits only on the expected linked `ai/issue-<id>` worktree, rejects configured Git filters, and verifies the immutable clean commit snapshot before pushing.
+  - Requires a passing verification result and configured nonempty `verification.secret_scan`. The full Reviewer report is included in the Draft PR body. An existing Draft PR is reused only when its commit and report body match the verified delivery before push.
+  - If the create-PR response is uncertain, returns `delivery_pending`, retains the active claim, branch, and private artifacts, cleans only the owned worktree, and requires manual reconciliation before retry. It does not automatically repeat PR creation.
 
 ### 2.6 Notifier Adapter
 
 - **Files:**
-  - `src/adapters/notifier/console.<ext>` (default local fallback)
-  - `src/adapters/notifier/telegram.<ext>` (reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from env)
+  - `src/adapters/notifier/console.ts` (default local fallback and selector)
+  - `src/adapters/notifier/telegram.ts` (reads `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` from env)
 - **Triggers:** `needs_approval` (plan ready), `ai_pr_ready` (Draft PR ready), `ai_failed` (circuit breaker tripped).
 
 ### Phase 2 Acceptance Criteria
 
-- [ ] Running Builder leaves the main local repository working tree 100% untouched.
-- [ ] Triggering a deliberate lint or test failure invokes `error_parser` and auto-fixes within `<= 3` retries; an unfixable failure trips the circuit breaker at attempt 3 and marks `ai_failed`.
-- [ ] Modifying a protected file or introducing a fake secret causes `verifier` to block `git push`.
-- [ ] Successful run opens a **Draft PR** on an `ai/issue-<id>` branch, posts Reviewer feedback, cleans up the worktree, and sends a notification.
+Automated acceptance uses temporary Git repositories, a local bare origin, real GitHub adapter logic with mocked HTTP, synthetic agents and trackers, and notifier mocks. The fresh Linux verification used Debian 13 ARM64, Node.js v26.13.1, Yarn 1.22.22, and Bubblewrap 0.12.0. The exact `yarn verify` command passed with 24 test files, 160 tests, and 0 skipped; build/import smoke and managed API export assertions also passed. Independent review approved the implementation. Full evidence is in the operator-held `linux/fresh-final/verification-summary.md` task artifact.
+
+- [x] Automated integration coverage confirms Builder changes stay in the isolated worktree and the source checkout remains untouched.
+- [x] Automated coverage confirms repairable verification failures recover within three total attempts and terminal failure marks `ai_failed`.
+- [x] Protected-path and secret-scan failures block delivery before push.
+- [x] A successful mocked GitHub delivery pushes the verified commit to a local bare origin, creates a Draft PR with the full Reviewer report in its body, cleans the owned worktree, and exercises notifications.
+
+**Operational follow-up:** Live GitHub and Telegram factory end-to-end acceptance was not performed. Run it with authorized test credentials and a test repository before operational use.
 
 ---
 
