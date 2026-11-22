@@ -39,6 +39,7 @@ export type SandboxResult = {
 export type HiddenPath = { path: string; isDirectory: boolean };
 
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
+const BWRAP_EXECUTABLE = "/usr/bin/bwrap";
 
 function isInside(root: string, target: string): boolean {
   const path = relative(root, target);
@@ -333,7 +334,7 @@ export async function runSandboxed(command: string, args: string[], options: San
     ...(gitData ? { gitMounts: gitData.mounts } : {}),
   });
   return runProcess({
-    command: "bwrap",
+    command: BWRAP_EXECUTABLE,
     args: sandboxArgs,
     cwd: workspace,
     env: { ...safeEnvironment(readyOptions), ...(gitData?.env ?? {}) },

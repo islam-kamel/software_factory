@@ -127,6 +127,29 @@ it.skipIf(process.platform !== "linux" || process.arch !== "arm64")(
   },
 );
 
+it.skipIf(process.platform !== "linux" || process.arch !== "arm64")(
+  "launches the host sandbox with a runtime-only guest PATH",
+  async () => {
+    const fixtureData = await fixture();
+    const runtimeProfile = {
+      ...fixtureData.runtimeProfile,
+      mounts: fixtureData.runtimeProfile.mounts.map((mount) =>
+        mount.target === "/bin/bash" ? { ...mount, target: "/runtime/bash" } : mount,
+      ),
+      commands: { bash: "/runtime/bash" },
+    };
+    const result = await runSandboxed("bash", ["-c", 'test "$PATH" = "/runtime" && printf runtime-only-path'], {
+      ...fixtureData,
+      runtimeProfile,
+      ignorePaths: [],
+      access: "read_only",
+      timeoutMs: 5000,
+    });
+
+    expect(result).toMatchObject({ exitCode: 0, stdout: "runtime-only-path" });
+  },
+);
+
 it.skipIf(process.platform !== "linux")("launches while masking a parent and nested runtime profile", async () => {
   const fixtureData = await fixture();
   const baseOptions = {
