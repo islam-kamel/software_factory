@@ -50,6 +50,8 @@ yarn verify
 
 2. **Configure global adapters and models:**
    Review and adjust [config/factory.yaml](config/factory.yaml) and [config/models.yaml](config/models.yaml).
+   Egress proxy setup, supported routes, and Linux resource limits are documented in the
+   [integration guide](INTEGRATION_GUIDE.md#phase-3-egress-proxy-and-resource-limits).
 
 3. **Register your repositories:**
 

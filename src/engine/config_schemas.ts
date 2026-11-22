@@ -135,11 +135,41 @@ const ProviderSchema = z
     }
   });
 
+const FactoryLimitsSchema = z
+  .object({
+    cpu_quota_percent: z.number().finite().min(1).max(10_000).optional(),
+    memory_mb: z.number().int().min(1).max(1_048_576).optional(),
+    max_pids: z.number().int().min(1).max(1_000_000).optional(),
+  })
+  .catchall(z.number());
+
+const UnixSocketPathSchema = z
+  .string()
+  .max(100)
+  .refine((path) => path.startsWith("/") && !path.includes("\0"), "Expected an absolute Unix socket path");
+
+const EgressProxySchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    public_socket: UnixSocketPathSchema.optional(),
+    local_socket: UnixSocketPathSchema.optional(),
+  })
+  .strict()
+  .superRefine((proxy, context) => {
+    if (!proxy.enabled) return;
+    if (!proxy.public_socket) context.addIssue({ code: "custom", path: ["public_socket"], message: "Required" });
+    if (!proxy.local_socket) context.addIssue({ code: "custom", path: ["local_socket"], message: "Required" });
+    if (proxy.public_socket && proxy.public_socket === proxy.local_socket) {
+      context.addIssue({ code: "custom", path: ["local_socket"], message: "Must be a separate socket" });
+    }
+  });
+
 export const FactoryConfigSchema = z
   .object({
     version: z.string(),
     adapters: z.record(z.string(), z.string()).optional(),
-    limits: z.record(z.string(), z.number()).optional(),
+    limits: FactoryLimitsSchema.optional(),
+    egress_proxy: EgressProxySchema.optional(),
     workspace: z.record(z.string(), z.unknown()).optional(),
     security: z.record(z.string(), z.unknown()).optional(),
     logging: z.record(z.string(), z.unknown()).optional(),
@@ -191,6 +221,25 @@ export const ResolvedRepositorySchema = z
   .strict();
 
 export type FactoryConfig = z.infer<typeof FactoryConfigSchema>;
+export type ResourceLimits = {
+  cpu_quota_percent: number;
+  memory_mb: number;
+  max_pids: number;
+};
 export type ModelsConfig = z.infer<typeof ModelsConfigSchema>;
 export type RepositoriesConfig = z.infer<typeof RepositoriesConfigSchema>;
 export type ResolvedRepository = z.infer<typeof ResolvedRepositorySchema>;
+
+export const DEFAULT_RESOURCE_LIMITS: ResourceLimits = {
+  cpu_quota_percent: 100,
+  memory_mb: 2048,
+  max_pids: 256,
+};
+
+export function getResourceLimits(limits?: FactoryConfig["limits"]): ResourceLimits {
+  return {
+    cpu_quota_percent: limits?.cpu_quota_percent ?? DEFAULT_RESOURCE_LIMITS.cpu_quota_percent,
+    memory_mb: limits?.memory_mb ?? DEFAULT_RESOURCE_LIMITS.memory_mb,
+    max_pids: limits?.max_pids ?? DEFAULT_RESOURCE_LIMITS.max_pids,
+  };
+}

@@ -1,0 +1,59 @@
+# ============================================================
+# docker-compose.yml
+# Purpose : Run the outbound LLM proxy behind private Unix sockets
+# Feature : Phase 3 network hardening
+# Role    : Operator deployment configuration
+# API Doc : docs/implementation_plan.md, Phase 3
+# ============================================================
+services:
+  egress-proxy:
+    image: nginx:1.30.7-alpine
+    user: "${SOCKET_UID:-1000}:${SOCKET_GID:-1000}"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    entrypoint:
+      - /bin/sh
+      - /etc/nginx/entrypoint.sh
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,uid=${SOCKET_UID:-1000},gid=${SOCKET_GID:-1000},mode=0700
+      - /etc/nginx/conf.d:rw,nosuid,nodev,noexec,uid=${SOCKET_UID:-1000},gid=${SOCKET_GID:-1000},mode=0700
+    environment:
+      NGINX_ENVSUBST_TEMPLATE_DIR: /etc/nginx/templates
+      NGINX_ENVSUBST_OUTPUT_DIR: /tmp/nginx
+      NGINX_ENVSUBST_FILTER: "^(OPENROUTER_API_KEY|OPENAI_API_KEY|OPENCODE_API_KEY)$"
+      OPENROUTER_API_KEY: "${OPENROUTER_API_KEY:-}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENCODE_API_KEY: "${OPENCODE_API_KEY:-}"
+    command:
+      - nginx
+      - -c
+      - /tmp/nginx/nginx.conf
+      - -g
+      - daemon off;
+    volumes:
+      - type: bind
+        source: ${FACTORY_EGRESS_SOCKET_DIR:-/run/software-factory/egress}
+        target: /run/factory
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./nginx.conf
+        target: /etc/nginx/templates/nginx.conf.template
+        read_only: true
+      - type: bind
+        source: ./proxy-llm-headers.conf.template
+        target: /etc/nginx/templates/proxy-llm-headers.conf.template
+        read_only: true
+      - type: bind
+        source: ./entrypoint.sh
+        target: /etc/nginx/entrypoint.sh
+        read_only: true
+    networks:
+      - egress
+
+networks:
+  egress:
+    name: ${FACTORY_EGRESS_NETWORK:-software-factory-egress}

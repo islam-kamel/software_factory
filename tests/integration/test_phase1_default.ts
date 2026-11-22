@@ -45,8 +45,10 @@ async function makeFixture(check: string): Promise<Fixture> {
   const configDirectory = join(root, "config");
   const ticketsDirectory = join(root, "tickets");
   const outputDirectory = join(root, "runs");
-  const fakeBin = join(root, "bin");
-  await Promise.all([mkdir(repositoryPath), mkdir(configDirectory), mkdir(ticketsDirectory), mkdir(fakeBin)]);
+  // Keep the executable fixture off potentially noexec temporary filesystems.
+  const fakeBin = await mkdtemp(join(process.cwd(), ".factory-default-phase1-bin-"));
+  roots.push(fakeBin);
+  await Promise.all([mkdir(repositoryPath), mkdir(configDirectory), mkdir(ticketsDirectory)]);
   await writeFile(join(repositoryPath, "AGENTS.md"), "Synthetic repository rules\n");
   await writeFile(join(repositoryPath, "README.md"), "base\n");
   await initializeGit(repositoryPath, workspace);
@@ -122,13 +124,13 @@ async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
 }
 
 async function writeRuntimeProfile(config: string, fakeCli: string): Promise<void> {
-  const libraryDirectory = "/lib/aarch64-linux-gnu";
+  const [libraryDirectory, dynamicLoader] = getRuntimeLibraryPaths(process.arch);
   const files = [
     ["/usr/bin/bash", "/bin/bash"],
     ["/usr/bin/dash", "/bin/sh"],
     [`${libraryDirectory}/libtinfo.so.6`, `${libraryDirectory}/libtinfo.so.6`],
     [`${libraryDirectory}/libc.so.6`, `${libraryDirectory}/libc.so.6`],
-    ["/lib/ld-linux-aarch64.so.1", "/lib/ld-linux-aarch64.so.1"],
+    [dynamicLoader, dynamicLoader],
     [fakeCli, "/runtime/codex"],
   ] as const;
   const mounts = await Promise.all(files.map(async ([source, target]) => ({ source: await realpath(source), target })));
@@ -140,6 +142,16 @@ async function writeRuntimeProfile(config: string, fakeCli: string): Promise<voi
       commands: { codex: "/runtime/codex", "/bin/bash": "/bin/bash", "/bin/sh": "/bin/sh" },
     }),
   );
+}
+
+function getRuntimeLibraryPaths(architecture: string): [string, string] {
+  if (architecture === "arm64") {
+    return ["/lib/aarch64-linux-gnu", "/lib/ld-linux-aarch64.so.1"];
+  }
+  if (architecture === "x64") {
+    return ["/lib/x86_64-linux-gnu", "/lib64/ld-linux-x86-64.so.2"];
+  }
+  throw new Error(`Unsupported architecture for Phase 1 runtime fixture: ${architecture}`);
 }
 
 async function writeCli(directory: string): Promise<void> {

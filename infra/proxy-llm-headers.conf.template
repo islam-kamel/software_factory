@@ -1,0 +1,19 @@
+# ============================================================
+# proxy-llm-headers.conf.template
+# Purpose : Strip client credentials and proxy metadata before upstream requests
+# Feature : Phase 3 network hardening
+# Role    : API gateway header policy
+# API Doc : https://nginx.org/en/docs/http/ngx_http_proxy_module.html
+# ============================================================
+proxy_pass_request_headers off;
+proxy_http_version 1.1;
+proxy_set_header Connection "";
+proxy_set_header Content-Type $content_type;
+proxy_set_header Content-Length $content_length;
+proxy_set_header Accept $http_accept;
+proxy_set_header User-Agent software-factory-egress;
+proxy_set_header Accept-Encoding "";
+proxy_hide_header Authorization;
+proxy_hide_header Proxy-Authenticate;
+proxy_hide_header Location;
+proxy_hide_header Set-Cookie;

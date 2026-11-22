@@ -13,7 +13,7 @@ import { assertDeliverySnapshot, prepareCommit } from "@/adapters/git_host/deliv
 import { assertProtectedDiff, createVerifier } from "@/self_healing/verifier";
 import type { VerifyFunction } from "@/engine/orchestrator";
 import { getRunState } from "@/engine/orchestrator";
-import type { FactoryConfig, ResolvedRepository } from "@/engine/config_schemas";
+import { getResourceLimits, type FactoryConfig, type ResolvedRepository } from "@/engine/config_schemas";
 import type { Ticket, VerificationResult } from "@/engine/contracts";
 import type { ManagedWorkspace } from "@/engine/workspace";
 import { getWorkspaceDiff } from "@/adapters/cli_runner/workspace";
@@ -56,6 +56,7 @@ async function verifyDelivery(input: {
     workspace: workspace.path,
     attempt: 1,
     timeoutMs: options.timeoutMs,
+    resourceLimits: getResourceLimits(options.factory.limits),
     baseBranch: workspace.baseCommit,
     logDirectory: join(outputDirectory, "verification-logs"),
   });

@@ -10,7 +10,7 @@ import { lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from "n
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import type { AgentResult, Ticket, VerificationResult } from "@/engine/contracts";
-import type { ResolvedRepository } from "@/engine/config_schemas";
+import type { ResolvedRepository, ResourceLimits } from "@/engine/config_schemas";
 import { buildContext } from "@/engine/context_builder";
 import { createVerifier, type VerifyOptions } from "@/self_healing/verifier";
 import { assertBuilderWorkspace, getWorkspaceDiff } from "@/adapters/cli_runner/workspace";
@@ -71,6 +71,7 @@ type SharedOptions = {
   tracker: TrackerAdapter;
   configDirectory?: string;
   timeoutMs?: number;
+  resourceLimits?: ResourceLimits;
   agentRunner?: AgentRunner;
   verifier?: VerifyFunction;
 };
@@ -454,6 +455,7 @@ async function verifyBuild(input: {
     workspace,
     attempt,
     timeoutMs: options.timeoutMs ?? 15 * 60 * 1000,
+    ...(options.resourceLimits ? { resourceLimits: options.resourceLimits } : {}),
     ...(options.baseBranch ? { baseBranch: options.baseBranch } : {}),
     ...(options.logDirectory ? { logDirectory: options.logDirectory } : {}),
   });

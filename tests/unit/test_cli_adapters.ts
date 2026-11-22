@@ -58,8 +58,22 @@ it("routes OpenCode to the exact configured provider/model", () => {
   const invocation = createOpenCodeInvocation({ ...request, provider: "openrouter" });
 
   expect(invocation.cwd).toBe(request.workspace);
+  expect(invocation.args).not.toContain("--dir");
   expect(invocation.args).toContain("openrouter/gpt-test");
   expect(invocation.args).toContain("--format");
+});
+
+it("uses only the isolated config file for OpenCode egress", () => {
+  const invocation = createOpenCodeInvocation({
+    ...request,
+    provider: "opencode-go",
+    model: "glm-5.3",
+    egressConfigPath: "/tmp/factory/opencode.json",
+  });
+
+  expect(invocation.env.OPENCODE_CONFIG).toBe("/tmp/factory/opencode.json");
+  expect(invocation.env.OPENCODE_CONFIG_DIR).toBeUndefined();
+  expect(invocation.env.OPENCODE_API_KEY).toBeUndefined();
 });
 
 it("uses Codex totals without adding cached or reasoning breakdowns", () => {

@@ -8,9 +8,12 @@
 import { access, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createVerifier, type CheckRunner } from "@/self_healing/verifier";
-import type { ResolvedRepository } from "@/engine/config_schemas";
+import { DEFAULT_RESOURCE_LIMITS, type ResolvedRepository } from "@/engine/config_schemas";
+
+vi.mock("@/adapters/cli_runner/sandbox", () => ({ runSandboxed: vi.fn() }));
+import { runSandboxed } from "@/adapters/cli_runner/sandbox";
 
 const roots: string[] = [];
 
@@ -62,6 +65,30 @@ it("runs secret scan, lint, typecheck and test in order and stops at the first f
   });
   expect(calls).toEqual(["secret_scan:scan", "lint:lint", "typecheck:types"]);
   expect(result).toMatchObject({ passed: false, attempt: 1, failed_step: "typecheck", summary: "type error" });
+});
+
+it("always runs verifier steps with offline isolation", async () => {
+  vi.mocked(runSandboxed).mockResolvedValue({
+    exitCode: 0,
+    stdout: "",
+    stderr: "",
+    timedOut: false,
+    outputLimit: false,
+  });
+  const runtimeProfile = { mounts: [], commands: { bash: "/bin/bash" }, path: "/tmp/runtime-profile.yaml" };
+  const result = await createVerifier()({
+    repository: makeRepository({ secret_scan: "scan", lint: "lint", typecheck: "types", test: "tests" }),
+    workspace: await makeWorkspace(),
+    runtimeProfile,
+  });
+
+  expect(result.passed).toBe(true);
+  expect(vi.mocked(runSandboxed)).toHaveBeenCalledTimes(4);
+  expect(vi.mocked(runSandboxed).mock.calls.every((call) => call[2].offline === true)).toBe(true);
+  expect(vi.mocked(runSandboxed).mock.calls.every((call) => call[2].resourceLimits === DEFAULT_RESOURCE_LIMITS)).toBe(
+    true,
+  );
+  vi.mocked(runSandboxed).mockReset();
 });
 
 it("reports configured command timeouts as a failed verification step", async () => {

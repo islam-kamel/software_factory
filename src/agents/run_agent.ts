@@ -9,6 +9,7 @@ import { createAgyInvocation, parseAgyOutput } from "@/adapters/cli_runner/agy";
 import { createCodexInvocation, parseCodexOutput } from "@/adapters/cli_runner/codex";
 import { createOpenCodeInvocation, parseOpenCodeOutput } from "@/adapters/cli_runner/opencode";
 import { runSandboxed } from "@/adapters/cli_runner/sandbox";
+import { createOpenCodeEgressConfig, getOpenCodeEgressBaseUrl } from "@/adapters/llm/egress_proxy";
 import { loadSandboxRuntimeProfile, type SandboxRuntimeProfile } from "@/adapters/cli_runner/runtime_profile";
 import { assertBuilderWorkspace, assertRepositoryWorkspace } from "@/adapters/cli_runner/workspace";
 import type { CliRequest } from "@/adapters/cli_runner/types";
@@ -19,6 +20,7 @@ import {
   type FactoryConfig,
   type ModelsConfig,
   type ResolvedRepository,
+  getResourceLimits,
 } from "@/engine/config_schemas";
 import { isIgnoredPath } from "@/engine/context_builder";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -197,7 +199,65 @@ type PreparedAgentRun = {
   scratchDirectory: string;
   timeoutMs: number;
   runtimeProfile: SandboxRuntimeProfile;
+  resourceLimits: ReturnType<typeof getResourceLimits>;
+  egressSocket?: string;
+  egressConfigPath?: string;
 };
+
+async function prepareEgressRun(input: {
+  enabled: boolean;
+  factory: FactoryConfig;
+  repository: ResolvedRepository;
+  route: ReturnType<typeof selectedRoute>;
+  provider: NonNullable<ModelsConfig["providers"][string]>;
+  scratchDirectory: string;
+  secrets: ReadonlyMap<string, string>;
+}): Promise<{ apiKey?: string; egressSocket?: string; egressConfigPath?: string }> {
+  const { enabled, factory, repository, route, provider, scratchDirectory, secrets } = input;
+  if (!enabled) {
+    const apiKey = provider.api_key_env ? secrets.get(provider.api_key_env) : undefined;
+    return apiKey ? { apiKey } : {};
+  }
+  if (route.cli !== "opencode") throw new Error("Egress proxy currently supports only the OpenCode CLI");
+  getOpenCodeEgressBaseUrl(route.provider);
+  const proxy = factory.egress_proxy;
+  if (!proxy) throw new Error("Egress proxy is enabled but not configured");
+  const isCloud = repository.privacy.allow_cloud_llm ?? true;
+  const egressSocket = isCloud ? proxy.public_socket : proxy.local_socket;
+  if (!egressSocket) throw new Error("Egress proxy socket is not configured");
+  const egressConfigPath = resolve(scratchDirectory, "opencode.json");
+  await writeExclusive(egressConfigPath, JSON.stringify(createOpenCodeEgressConfig(route.provider, route.model)));
+  return { egressSocket, egressConfigPath };
+}
+
+async function readAgentPrompt(input: {
+  root: string;
+  role: AgentRole;
+  options: RunAgentOptions;
+  workspace: string;
+  repository: ResolvedRepository;
+}): Promise<{ prompt: string; rolePrompt: string; metadata: RoleMetadata }> {
+  const { root, role, options, workspace, repository } = input;
+  const metadata = await readRole(root, role);
+  const prompt = await readPrompt(options.promptPath, workspace, repository.privacy.ignore_paths ?? []);
+  const promptFile = resolve(root, "src/agents", role, metadata.prompt_file);
+  if (!isInside(resolve(root, "src/agents"), promptFile))
+    throw new Error("Role prompt path escapes the agent directory");
+  return { prompt, rolePrompt: await readFile(promptFile, "utf8"), metadata };
+}
+
+async function assertAgentWorkspace(role: AgentRole, workspace: string, repository: ResolvedRepository): Promise<void> {
+  if (role === "builder") return assertBuilderWorkspace({ workspace, repository: repository.local_path });
+  return assertRepositoryWorkspace({ workspace, repository: repository.local_path });
+}
+
+async function createAgentScratch(workspace: string): Promise<string> {
+  const scratchDirectory = await realpath(await mkdtemp(resolve(tmpdir(), "software-factory-agent-")));
+  if (isInside(workspace, scratchDirectory) || isInside(scratchDirectory, workspace)) {
+    throw new Error("Agent scratch must be outside the workspace");
+  }
+  return scratchDirectory;
+}
 
 async function loadRepositoryConfig(options: RunAgentOptions, workspace: string) {
   const root = resolve(process.env.SOFTWARE_FACTORY_ROOT ?? process.cwd());
@@ -219,26 +279,31 @@ async function prepareAgentRun(options: RunAgentOptions): Promise<PreparedAgentR
   const config = await loadRepositoryConfig(options, workspace);
   const { root, configDirectory, loaded, repository } = config;
   const runtimeProfile = await loadSandboxRuntimeProfile(resolve(root, "config/runtime-profile.yaml"));
-  if (options.role === "builder") await assertBuilderWorkspace({ workspace, repository: repository.local_path });
-  else await assertRepositoryWorkspace({ workspace, repository: repository.local_path });
-
-  const metadata = await readRole(root, options.role);
+  await assertAgentWorkspace(options.role, workspace, repository);
+  const { metadata, prompt, rolePrompt } = await readAgentPrompt({
+    root,
+    role: options.role,
+    options,
+    workspace,
+    repository,
+  });
   const outputDirectory = await ensureOutputDirectory(workspace, options.outputDirectory);
   const outputFile = resolve(outputDirectory, metadata.output_file);
   const resultFile = resolve(outputDirectory, "AgentResult.json");
-  const prompt = await readPrompt(options.promptPath, workspace, repository.privacy.ignore_paths ?? []);
-  const promptFile = resolve(root, "src/agents", options.role, metadata.prompt_file);
-  if (!isInside(resolve(root, "src/agents"), promptFile))
-    throw new Error("Role prompt path escapes the agent directory");
-  const rolePrompt = await readFile(promptFile, "utf8");
   const route = selectedRoute(repository, options.role, loaded.config.models);
   const provider = loaded.config.models.providers[route.provider];
   if (!provider) throw new Error("Selected provider is missing from models config");
-  const apiKey = provider.api_key_env ? loaded.secrets.get(provider.api_key_env) : undefined;
-  const scratch = await mkdtemp(resolve(tmpdir(), "software-factory-agent-"));
-  const scratchDirectory = await realpath(scratch);
-  if (isInside(workspace, scratchDirectory) || isInside(scratchDirectory, workspace))
-    throw new Error("Agent scratch must be outside the workspace");
+  const egressEnabled = loaded.config.factory.egress_proxy?.enabled ?? false;
+  const scratchDirectory = await createAgentScratch(workspace);
+  const egress = await prepareEgressRun({
+    enabled: egressEnabled,
+    factory: loaded.config.factory,
+    repository,
+    route,
+    provider,
+    scratchDirectory,
+    secrets: loaded.secrets,
+  });
   return {
     root,
     configDirectory,
@@ -250,28 +315,21 @@ async function prepareAgentRun(options: RunAgentOptions): Promise<PreparedAgentR
     prompt,
     rolePrompt,
     route,
-    ...(apiKey ? { apiKey } : {}),
+    ...(egress.apiKey ? { apiKey: egress.apiKey } : {}),
     scratchDirectory,
     timeoutMs: timeoutMs(loaded.config.factory),
     runtimeProfile,
+    resourceLimits: getResourceLimits(loaded.config.factory.limits),
+    ...(egress.egressSocket ? { egressSocket: egress.egressSocket } : {}),
+    ...(egress.egressConfigPath ? { egressConfigPath: egress.egressConfigPath } : {}),
   };
 }
 
 async function executePreparedRun(options: RunAgentOptions, prepared: PreparedAgentRun): Promise<AgentResult> {
-  const request: CliRequest = {
-    role: options.role,
-    workspace: prepared.workspace,
-    prompt: prepared.rolePrompt + "\n\n" + prepared.prompt,
-    provider: prepared.route.provider,
-    model: prepared.route.model,
-    access: prepared.metadata.access,
-    timeoutMs: prepared.timeoutMs,
-    contextMode: prepared.repository.context?.mode ?? "merge",
-    scratchDirectory: prepared.scratchDirectory,
-    ...(prepared.apiKey ? { apiKey: prepared.apiKey } : {}),
-  };
+  const request = createPreparedCliRequest(options, prepared);
   const runner = runnerFor(prepared.route.cli);
   const invocation = runner.create(request);
+  assertNoProxyCredential(invocation.env, prepared.egressConfigPath !== undefined);
   const execution = await runSandboxed(invocation.command, invocation.args, {
     workspace: prepared.workspace,
     ignorePaths: prepared.repository.privacy.ignore_paths ?? [],
@@ -279,6 +337,8 @@ async function executePreparedRun(options: RunAgentOptions, prepared: PreparedAg
     timeoutMs: request.timeoutMs,
     scratchDirectory: prepared.scratchDirectory,
     runtimeProfile: prepared.runtimeProfile,
+    resourceLimits: prepared.resourceLimits,
+    ...(prepared.egressSocket ? { egressSocket: prepared.egressSocket, offline: true } : {}),
     repository: prepared.repository.local_path,
     blockedPaths: [
       ...instructionFiles(prepared.repository, prepared.workspace),
@@ -303,6 +363,29 @@ async function executePreparedRun(options: RunAgentOptions, prepared: PreparedAg
     estimated_cost_usd: output.costUsd,
     output_file: prepared.outputFile,
   });
+}
+
+function createPreparedCliRequest(options: RunAgentOptions, prepared: PreparedAgentRun): CliRequest {
+  return {
+    role: options.role,
+    workspace: prepared.workspace,
+    prompt: prepared.rolePrompt + "\n\n" + prepared.prompt,
+    provider: prepared.route.provider,
+    model: prepared.route.model,
+    access: prepared.metadata.access,
+    timeoutMs: prepared.timeoutMs,
+    contextMode: prepared.repository.context?.mode ?? "merge",
+    scratchDirectory: prepared.scratchDirectory,
+    ...(prepared.apiKey ? { apiKey: prepared.apiKey } : {}),
+    ...(prepared.egressConfigPath ? { egressConfigPath: prepared.egressConfigPath } : {}),
+  };
+}
+
+function assertNoProxyCredential(environment: NodeJS.ProcessEnv, isProxy: boolean): void {
+  const exposesCredential = Object.entries(environment).some(
+    ([name, value]) => value && /(?:API_KEY|TOKEN|SECRET)/i.test(name),
+  );
+  if (isProxy && exposesCredential) throw new Error("OpenCode egress invocation must not receive provider credentials");
 }
 
 export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {

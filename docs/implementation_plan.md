@@ -14,7 +14,7 @@ The repository foundation, documentation, config templates, and agent prompts ar
 - **Configuration & Contexts:** `.env.example`, `.gitignore`, `config/factory.yaml`, `config/models.yaml`, `config/repos.example.yaml`, `config/contexts/global-factory-rules.md`, `templates/AGENTS.template.md`
 - **Agent Prompts:** `src/agents/planner/prompt.md`, `src/agents/builder/prompt.md`, `src/agents/reviewer/prompt.md`
 - **Phase 0 Complete:** Config loading and schemas in `src/engine/config_loader.ts` and `src/engine/config_schemas.ts`, privacy checks in `src/engine/privacy_guard.ts`, contracts in `src/engine/contracts.ts`, and unit tests under `tests/unit/`.
-- **Remaining Implementation:** Phase 1 acceptance and Phase 2 implementation with automated acceptance are complete. Fresh combined Linux verification and independent review passed. Live GitHub and Telegram factory acceptance is a separate operational follow-up; Phase 3 and later remain deferred.
+- **Remaining Implementation:** Phases 0–3 are implemented and verified. Phase 4 remains deferred. Live GitHub and Telegram factory acceptance remains a separate operational follow-up.
 
 ---
 
@@ -208,32 +208,54 @@ Automated acceptance uses temporary Git repositories, a local bare origin, real 
 - **Files:**
   - `infra/docker-compose.yml`
   - `infra/nginx.conf`
+  - `infra/proxy-llm-headers.conf.template`
 - **Behavior:**
-  - Run an outbound-only local `Nginx` Egress Proxy container on a dedicated loopback/internal interface.
-  - Inject provider LLM API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_API_KEY`, etc.) exclusively at the proxy layer, apply per-provider rate limits, and enforce `privacy.allow_cloud_llm: false` at the network boundary (allowing only local providers such as Ollama for confidential repositories).
+  - Run NGINX without published TCP ports and expose separate public and local-only Unix sockets.
+  - Route only fixed provider paths to fixed upstreams; inject proxy keys, clear client credentials, verify
+    upstream TLS, and apply per-provider rate limits.
+  - The local socket allows only the Ollama-compatible route. It denies cloud paths regardless of headers.
 
 ### 3.3 Egress Proxy Adapter & Sandbox Secret Removal
 
 - **Files:**
   - `src/adapters/llm/egress_proxy.ts`
   - Update `src/adapters/cli_runner/sandbox.ts`, `src/engine/config_schemas.ts`, and `src/engine/privacy_guard.ts`
+  - Update `config/factory.yaml`, `.env.example`, `INTEGRATION_GUIDE.md`, and `README.md`
 - **Behavior:**
-  - Route agent CLI LLM calls to the local `Nginx` Egress Proxy endpoint with repository privacy policy routing.
-  - Remove raw provider API keys from `forwardedEnvironment` in `sandbox.ts` when Egress Proxy mode is enabled so compromised code or tools inside `bwrap` cannot read or exfiltrate real credentials.
+  - Route supported OpenCode models through a loopback bridge to the Unix socket selected by repository
+    privacy policy.
+  - Remove raw provider keys from agent configuration and sandbox environments in proxy mode. Unsupported
+    CLI/provider routes fail closed.
+  - Keep the offline verifier and proxy-mode agents inside an unshared network namespace.
 
 ### 3.4 Process & Resource Limits Hardening
 
 - **Files:**
-  - Update `src/adapters/cli_runner/sandbox.ts` and `config/factory.yaml`
+  - Update `src/adapters/cli_runner/sandbox.ts`, `config/factory.yaml`, and `INTEGRATION_GUIDE.md`
 - **Behavior:**
-  - Enforce configurable CPU, memory, and PID limits (e.g., via `systemd-run --user --scope` or `prlimit`) alongside `agent_timeout_minutes` and `MAX_OUTPUT_BYTES`.
+  - Enforce configurable CPU, memory, and PID limits for the full sandbox process tree through systemd user
+    scopes backed by delegated cgroup v2 controllers.
+  - Fail closed if scoped resource containment is unavailable; retain timeout and output-size limits.
 
 ### Phase 3 Acceptance Criteria
 
-- [ ] `verifier.ts` runs inside `bwrap --unshare-net`; unit/integration tests confirm outbound network calls from verification commands fail.
-- [ ] Agent sandboxes running in Egress Proxy mode contain zero raw provider API keys in `process.env` while successfully completing LLM requests through `infra/nginx.conf`.
-- [ ] A confidential repository (`allow_cloud_llm: false`) is blocked at both `privacy_guard.ts` and `infra/nginx.conf` if routed to a cloud provider.
-- [ ] CPU, memory, and PID caps terminate runaway verification or build processes cleanly without destabilizing the host.
+The supported OpenCode egress routes are OpenRouter, OpenAI, OpenCode Go, and the OpenAI-compatible Ollama
+endpoint. The proxy is opt-in; public and local socket paths are configured under `egress_proxy` in
+`config/factory.yaml`. See the [integration guide](../INTEGRATION_GUIDE.md#phase-3-egress-proxy-and-resource-limits)
+for host socket permissions and systemd/cgroup prerequisites.
+
+**Status:** Complete. Independent source review and full Linux verification passed. `yarn verify` reported
+27/27 test files and 174/174 tests passing, with zero skips or unhandled errors; Vite built 32 modules and
+the import check passed. Real OpenCode 2.3.2 completed a synthetic request through NGINX and Bubblewrap,
+and the production output parser returned the expected response. Network/privacy denial cases and actual
+CPU, memory, PID, and descendant cleanup checks passed. The integration guide documents Linux Bubblewrap,
+systemd user-service, and delegated cgroup prerequisites. Live provider credentials/network acceptance and
+production deployment were not tested; the egress acceptance used a synthetic upstream.
+
+- [x] `verifier.ts` runs inside `bwrap --unshare-net`; unit/integration tests confirm outbound network calls from verification commands fail.
+- [x] Agent sandboxes running in Egress Proxy mode contain zero raw provider API keys in `process.env` while successfully completing LLM requests through `infra/nginx.conf`.
+- [x] A confidential repository (`allow_cloud_llm: false`) is blocked at both `privacy_guard.ts` and `infra/nginx.conf` if routed to a cloud provider.
+- [x] CPU, memory, and PID caps terminate runaway verification or build processes cleanly without destabilizing the host.
 
 ---
 

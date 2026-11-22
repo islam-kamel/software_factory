@@ -12,7 +12,7 @@ import { DraftCreationUnknownError, type DraftReceipt, type GitHostAdapter } fro
 import { createNotifier, type NotificationEvent, type Notifier } from "@/adapters/notifier/console";
 import type { AgentRunner, OrchestrationResult, VerifyFunction } from "@/engine/orchestrator";
 import { getRunState, planTicket, resumeTicket } from "@/engine/orchestrator";
-import type { FactoryConfig, ResolvedRepository } from "@/engine/config_schemas";
+import { getResourceLimits, type FactoryConfig, type ResolvedRepository } from "@/engine/config_schemas";
 import type { Ticket } from "@/engine/contracts";
 import type { TrackerAdapter } from "@/adapters/tracker/types";
 import {
@@ -132,6 +132,7 @@ function managedOptions(
   tracker: TrackerAdapter;
   configDirectory?: string;
   timeoutMs?: number;
+  resourceLimits: ReturnType<typeof getResourceLimits>;
   agentRunner?: AgentRunner;
   verifier?: VerifyFunction;
 } {
@@ -140,6 +141,7 @@ function managedOptions(
     tracker,
     ...(options.configDirectory ? { configDirectory: options.configDirectory } : {}),
     timeoutMs: managedTimeout(options),
+    resourceLimits: getResourceLimits(options.factory.limits),
     ...(options.agentRunner ? { agentRunner: options.agentRunner } : {}),
     ...(options.verifier ? { verifier: options.verifier } : {}),
   };

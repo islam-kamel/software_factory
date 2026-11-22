@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import { parseDocument, stringify } from "yaml";
 import { loadConfig } from "@/engine/config_loader";
+import { FactoryConfigSchema, getResourceLimits } from "@/engine/config_schemas";
 
 const configDir = fileURLToPath(new URL("../../config/", import.meta.url));
 const exampleReposPath = join(configDir, "repos.example.yaml");
@@ -69,6 +70,47 @@ it("merges model roles, defaults, repo context and overrides without loading dis
   expect(loaded.config.defaults?.agents?.builder?.provider).toBe("opencode-go");
   expect(loaded.secrets.get("FINTECH_GH_TOKEN")).toBeUndefined();
   expect(JSON.stringify(loaded.config)).not.toContain("test-openrouter-key");
+});
+
+it("validates egress socket paths and supplies bounded resource defaults", () => {
+  const parsed = FactoryConfigSchema.parse({
+    version: "1.0",
+    limits: { agent_timeout_minutes: 15 },
+    egress_proxy: { enabled: true, public_socket: "/run/factory/public.sock", local_socket: "/run/factory/local.sock" },
+  });
+
+  expect(getResourceLimits(parsed.limits)).toEqual({ cpu_quota_percent: 100, memory_mb: 2048, max_pids: 256 });
+  expect(parsed.egress_proxy?.enabled).toBe(true);
+  expect(
+    FactoryConfigSchema.safeParse({
+      version: "1.0",
+      egress_proxy: { enabled: true, public_socket: "relative.sock", local_socket: "/run/factory/local.sock" },
+    }).success,
+  ).toBe(false);
+});
+
+it("does not resolve provider credentials in egress mode", async () => {
+  vi.stubEnv("GITHUB_TOKEN", "test-github-token");
+  vi.stubEnv("OPENROUTER_API_KEY", "must-not-be-read");
+  vi.stubEnv("OPENCODE_API_KEY", "must-not-be-read");
+  const factory = readYamlRecord(readFileSync(join(configDir, "factory.yaml"), "utf8"));
+  factory.egress_proxy = {
+    enabled: true,
+    public_socket: "/run/factory/public.sock",
+    local_socket: "/run/factory/local.sock",
+  };
+  const factoryPath = createTemporaryFile("factory.yaml", stringify(factory));
+
+  const loaded = await loadConfig({
+    factoryPath,
+    modelsPath: join(configDir, "models.yaml"),
+    reposPath: exampleReposPath,
+    repoId: "ecommerce-api",
+  });
+
+  expect(loaded.secrets.get("GITHUB_TOKEN")).toBe("test-github-token");
+  expect(loaded.secrets.has("OPENROUTER_API_KEY")).toBe(false);
+  expect(loaded.secrets.has("OPENCODE_API_KEY")).toBe(false);
 });
 
 it("resolves only the explicitly selected repository credentials", async () => {

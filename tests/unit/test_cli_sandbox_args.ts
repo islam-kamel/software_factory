@@ -95,3 +95,24 @@ it("makes only the ai worktree writable for Builder", () => {
   expect(args.slice(writableWorkspace, writableWorkspace + 3)).toEqual(["--bind", workspace, workspace]);
   expect(args.indexOf("--tmpfs", writableWorkspace)).toBeGreaterThan(writableWorkspace);
 });
+
+it("unshares the network only when explicitly requested", () => {
+  const request = {
+    command: "codex",
+    args: ["exec"],
+    options: {
+      workspace,
+      ignorePaths: [],
+      access: "read_only" as const,
+      timeoutMs: 1_000,
+      scratchDirectory: scratch,
+      runtimeProfile,
+    },
+    workspace,
+    hidden: [],
+    runtimeProfile,
+  };
+
+  expect(createBwrapArgs(request)).not.toContain("--unshare-net");
+  expect(createBwrapArgs({ ...request, options: { ...request.options, offline: true } })).toContain("--unshare-net");
+});

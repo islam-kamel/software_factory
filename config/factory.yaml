@@ -17,6 +17,16 @@ limits:
   max_parallel_tasks: 2
   agent_timeout_minutes: 15
   polling_interval_seconds: 60
+  cpu_quota_percent: 100
+  memory_mb: 2048
+  max_pids: 256
+
+# The operator runs `docker compose -f infra/docker-compose.yml up -d` separately.
+# Agent runs select one socket from repository privacy and mount only that socket.
+egress_proxy:
+  enabled: false
+  public_socket: "/run/software-factory/egress/public.sock"
+  local_socket: "/run/software-factory/egress/local.sock"
 
 # Isolated Git worktree settings
 workspace:

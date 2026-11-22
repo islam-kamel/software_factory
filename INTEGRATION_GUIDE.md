@@ -182,6 +182,50 @@ For GitHub tracker discovery, create the `ai-ready` label. Tracker polling is no
 
 ---
 
+## Phase 3 Egress Proxy and Resource Limits
+
+Proxy mode keeps provider API keys in the NGINX container. Agent processes receive a synthetic key and can
+reach only the Unix socket selected from the repository's `privacy.allow_cloud_llm` policy. The sandbox
+unshares its network namespace and exposes the selected socket through the trusted loopback bridge. The
+local socket permits the local Ollama route only. Other CLI/provider combinations fail closed in proxy mode.
+
+Create the host socket directory for the dedicated factory account with owner-only access. Set the UID and
+GID to that account when starting Compose, and keep `FACTORY_EGRESS_SOCKET_DIR` aligned with the absolute
+socket paths in `config/factory.yaml`:
+
+```bash
+sudo install -d -o "$(id -u)" -g "$(id -g)" -m 0700 /run/software-factory/egress
+export SOCKET_UID="$(id -u)" SOCKET_GID="$(id -g)"
+docker compose -f infra/docker-compose.yml config --quiet
+docker compose --env-file .env -f infra/docker-compose.yml up -d
+```
+
+The proxy publishes no TCP ports. For a local Ollama container, attach it to the Compose network with the
+required DNS alias:
+
+```bash
+docker network connect --alias ollama software-factory-egress <ollama-container>
+```
+
+Enable `egress_proxy.enabled` in `config/factory.yaml` only after the proxy is running. Configure the
+repository's privacy policy normally. Cloud credentials are needed only for the providers in use; missing
+cloud keys produce HTTP 503. API keys accept only letters, digits, dots, underscores, and hyphens so they
+cannot alter rendered NGINX configuration. The socket files are owner-only; keep their parent directory
+private and remove stale socket files only after confirming no proxy container is using them. Never expose
+the directory to untrusted host users.
+
+The default process limits are `cpu_quota_percent: 100`, `memory_mb: 2048`, and `max_pids: 256`. Execution
+requires Linux systemd user scopes with delegated cgroup v2 CPU, memory, and PID controllers. The factory
+fails closed if the scope cannot be created. The runtime must support `systemd-run --expand-environment=no`;
+the scope smoke test used systemd 259. Each scope sets `MemorySwapMax=0` so processes cannot move memory
+above the configured limit into swap. CPU quota throttles sustained work; the configured timeout terminates
+long-running CPU loops. Verifier dependencies must already be installed because its Bubblewrap network
+namespace has no external network access.
+
+Run the deterministic NGINX policy check with `infra/self_check.py`. It uses an internal Docker network,
+synthetic credentials, and local fake upstreams; it does not make provider requests. Live provider
+acceptance is a separate operator check.
+
 ## 4. Choosing a Deployment Mode
 
 ### Mode A: Local Polling Runner (Recommended for Client Repos)

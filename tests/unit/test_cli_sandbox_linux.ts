@@ -6,6 +6,7 @@
 // API Doc : https://github.com/containers/bubblewrap
 // ============================================================
 import { chmod, mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { stringify } from "yaml";
@@ -14,19 +15,29 @@ import { runSandboxed } from "@/adapters/cli_runner/sandbox";
 import { loadSandboxRuntimeProfile, type SandboxRuntimeProfile } from "@/adapters/cli_runner/runtime_profile";
 
 const temporaryDirectories: string[] = [];
+const linuxRuntime = process.platform === "linux" ? getLinuxRuntimePaths(process.arch) : undefined;
+const linuxLibraryDirectory = linuxRuntime?.libraryDirectory ?? "";
+const supportsLinuxRuntime = linuxRuntime !== undefined;
 const runtimeFiles = [
   ["/usr/bin/bash", "/bin/bash"],
-  ["/lib/aarch64-linux-gnu/libtinfo.so.6", "/lib/aarch64-linux-gnu/libtinfo.so.6"],
-  ["/lib/aarch64-linux-gnu/libc.so.6", "/lib/aarch64-linux-gnu/libc.so.6"],
-  ["/lib/ld-linux-aarch64.so.1", "/lib/ld-linux-aarch64.so.1"],
+  [resolve(linuxLibraryDirectory, "libtinfo.so.6"), resolve(linuxLibraryDirectory, "libtinfo.so.6")],
+  [resolve(linuxLibraryDirectory, "libc.so.6"), resolve(linuxLibraryDirectory, "libc.so.6")],
+  ...(linuxRuntime ? ([[linuxRuntime.loader, linuxRuntime.loader]] as const) : []),
   [process.execPath, "/usr/local/bin/node"],
-  ["/lib/aarch64-linux-gnu/libatomic.so.1", "/lib/aarch64-linux-gnu/libatomic.so.1"],
-  ["/lib/aarch64-linux-gnu/libdl.so.2", "/lib/aarch64-linux-gnu/libdl.so.2"],
-  ["/lib/aarch64-linux-gnu/libm.so.6", "/lib/aarch64-linux-gnu/libm.so.6"],
-  ["/lib/aarch64-linux-gnu/libstdc++.so.6", "/lib/aarch64-linux-gnu/libstdc++.so.6"],
-  ["/lib/aarch64-linux-gnu/libgcc_s.so.1", "/lib/aarch64-linux-gnu/libgcc_s.so.1"],
-  ["/lib/aarch64-linux-gnu/libpthread.so.0", "/lib/aarch64-linux-gnu/libpthread.so.0"],
+  ...["libatomic.so.1", "libdl.so.2", "libm.so.6", "libstdc++.so.6", "libgcc_s.so.1", "libpthread.so.0"].map(
+    (library) => [resolve(linuxLibraryDirectory, library), resolve(linuxLibraryDirectory, library)] as const,
+  ),
 ] as const;
+
+function getLinuxRuntimePaths(architecture: string): { libraryDirectory: string; loader: string } {
+  if (architecture === "arm64") {
+    return { libraryDirectory: "/lib/aarch64-linux-gnu", loader: "/lib/ld-linux-aarch64.so.1" };
+  }
+  if (architecture === "x64") {
+    return { libraryDirectory: "/lib/x86_64-linux-gnu", loader: "/lib64/ld-linux-x86-64.so.2" };
+  }
+  throw new Error(`Unsupported architecture for Linux sandbox fixture: ${architecture}`);
+}
 
 async function runtimeProfile(base: string, cliPath: string): Promise<SandboxRuntimeProfile> {
   const mounts = await Promise.all([
@@ -77,7 +88,10 @@ async function fixture(): Promise<{
   await mkdir(hostHome);
   await writeFile(resolve(hostHome, "credential.txt"), "synthetic credential\n");
   await symlink(resolve(hostHome, "credential.txt"), resolve(workspace, "home-escape"));
-  const cliPath = resolve(base, "fake-codex");
+  // Keep the executable fixture off temporary filesystems that may be mounted noexec.
+  const cliDirectory = await mkdtemp(resolve(process.cwd(), ".factory-sandbox-cli-"));
+  temporaryDirectories.push(cliDirectory);
+  const cliPath = resolve(cliDirectory, "fake-codex");
   await writeFile(cliPath, "#!/bin/bash\nprintf 'synthetic-codex 1.0\\n'\n");
   await chmod(cliPath, 0o700);
   return {
@@ -92,65 +106,59 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-it.skipIf(process.platform !== "linux" || process.arch !== "arm64")(
-  "runs explicitly mounted Node and CLI help",
-  async () => {
-    const fixtureData = await fixture();
-    const options = {
-      ...fixtureData,
-      ignorePaths: [],
-      access: "read_only" as const,
-      timeoutMs: 5000,
-    };
-    const node = await runSandboxed("node", ["--version"], options);
-    const cli = await runSandboxed("codex", ["--help"], options);
-    expect(node).toMatchObject({ exitCode: 0, stdout: "v26.13.1\n" });
-    expect(cli).toMatchObject({
-      exitCode: 0,
-      stdout: "synthetic-codex 1.0\n",
-    });
+it.skipIf(!supportsLinuxRuntime)("runs explicitly mounted Node and CLI help", async () => {
+  const fixtureData = await fixture();
+  const options = {
+    ...fixtureData,
+    ignorePaths: [],
+    access: "read_only" as const,
+    timeoutMs: 5000,
+  };
+  const node = await runSandboxed("node", ["--version"], options);
+  const cli = await runSandboxed("codex", ["--help"], options);
+  expect(node).toMatchObject({ exitCode: 0, stdout: `${process.version}\n` });
+  expect(cli).toMatchObject({
+    exitCode: 0,
+    stdout: "synthetic-codex 1.0\n",
+  });
 
-    const key = "SF_TEST_HOST_ONLY";
-    const previous = process.env[key];
-    process.env[key] = "synthetic-host-only-value";
-    try {
-      const environment = await runSandboxed(
-        "node",
-        ["-e", "process.stdout.write(process.env.HOME + '\\n' + (process.env.SF_TEST_HOST_ONLY ?? 'missing'))"],
-        options,
-      );
-      expect(environment).toMatchObject({ exitCode: 0, stdout: "/home/factory\nmissing" });
-    } finally {
-      if (previous === undefined) delete process.env[key];
-      else process.env[key] = previous;
-    }
-  },
-);
+  const key = "SF_TEST_HOST_ONLY";
+  const previous = process.env[key];
+  process.env[key] = "synthetic-host-only-value";
+  try {
+    const environment = await runSandboxed(
+      "node",
+      ["-e", "process.stdout.write(process.env.HOME + '\\n' + (process.env.SF_TEST_HOST_ONLY ?? 'missing'))"],
+      options,
+    );
+    expect(environment).toMatchObject({ exitCode: 0, stdout: "/home/factory\nmissing" });
+  } finally {
+    if (previous === undefined) delete process.env[key];
+    else process.env[key] = previous;
+  }
+});
 
-it.skipIf(process.platform !== "linux" || process.arch !== "arm64")(
-  "launches the host sandbox with a runtime-only guest PATH",
-  async () => {
-    const fixtureData = await fixture();
-    const runtimeProfile = {
-      ...fixtureData.runtimeProfile,
-      mounts: fixtureData.runtimeProfile.mounts.map((mount) =>
-        mount.target === "/bin/bash" ? { ...mount, target: "/runtime/bash" } : mount,
-      ),
-      commands: { bash: "/runtime/bash" },
-    };
-    const result = await runSandboxed("bash", ["-c", 'test "$PATH" = "/runtime" && printf runtime-only-path'], {
-      ...fixtureData,
-      runtimeProfile,
-      ignorePaths: [],
-      access: "read_only",
-      timeoutMs: 5000,
-    });
+it.skipIf(!supportsLinuxRuntime)("launches the host sandbox with a runtime-only guest PATH", async () => {
+  const fixtureData = await fixture();
+  const runtimeProfile = {
+    ...fixtureData.runtimeProfile,
+    mounts: fixtureData.runtimeProfile.mounts.map((mount) =>
+      mount.target === "/bin/bash" ? { ...mount, target: "/runtime/bash" } : mount,
+    ),
+    commands: { bash: "/runtime/bash" },
+  };
+  const result = await runSandboxed("bash", ["-c", 'test "$PATH" = "/runtime" && printf runtime-only-path'], {
+    ...fixtureData,
+    runtimeProfile,
+    ignorePaths: [],
+    access: "read_only",
+    timeoutMs: 5000,
+  });
 
-    expect(result).toMatchObject({ exitCode: 0, stdout: "runtime-only-path" });
-  },
-);
+  expect(result).toMatchObject({ exitCode: 0, stdout: "runtime-only-path" });
+});
 
-it.skipIf(process.platform !== "linux")("launches while masking a parent and nested runtime profile", async () => {
+it.skipIf(!supportsLinuxRuntime)("launches while masking a parent and nested runtime profile", async () => {
   const fixtureData = await fixture();
   const baseOptions = {
     ...fixtureData,
@@ -182,7 +190,7 @@ it.skipIf(process.platform !== "linux")("launches while masking a parent and nes
   expect(standalone).toMatchObject({ exitCode: 0, stdout: "standalone-hidden" });
 });
 
-it.skipIf(process.platform !== "linux")("allows public reads and denies ignored reads", async () => {
+it.skipIf(!supportsLinuxRuntime)("allows public reads and denies ignored reads", async () => {
   const fixtureData = await fixture();
   const options = {
     ...fixtureData,
@@ -208,9 +216,16 @@ it.skipIf(process.platform !== "linux")("allows public reads and denies ignored 
   expect(nestedIgnored.exitCode).not.toBe(0);
 });
 
-it.skipIf(process.platform !== "linux")(
-  "denies Planner writes, host-home symlinks, and unrelated system files",
-  async () => {
+it.skipIf(!supportsLinuxRuntime)("blocks loopback connections only when offline is enabled", async () => {
+  const server = createServer((socket) => socket.end("reachable"));
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string") throw new Error("Test server did not bind to a TCP port");
+
+  try {
     const fixtureData = await fixture();
     const options = {
       ...fixtureData,
@@ -218,17 +233,45 @@ it.skipIf(process.platform !== "linux")(
       access: "read_only" as const,
       timeoutMs: 5000,
     };
-    const deniedWrite = await runSandboxed("/bin/bash", ["-c", "printf blocked > blocked.txt"], options);
-    const outside = await runSandboxed("/bin/bash", ["-c", "test -r home-escape"], options);
-    const system = await runSandboxed("/bin/bash", ["-c", "test -e /etc/passwd -o -e /usr/local/share"], options);
-    expect(deniedWrite.exitCode).not.toBe(0);
-    expect(outside.exitCode).not.toBe(0);
-    expect(system.exitCode).not.toBe(0);
-    await expect(readFile(resolve(options.workspace, "blocked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
-  },
-);
+    const probe = [
+      "const socket = require('node:net').connect(Number(process.argv[1]), '127.0.0.1');",
+      "let response = '';",
+      "socket.setEncoding('utf8');",
+      "socket.on('data', (chunk) => { response += chunk; });",
+      "socket.once('connect', () => socket.end());",
+      "socket.once('end', () => process.exit(response === 'reachable' ? 0 : 3));",
+      "socket.once('error', () => process.exit(2));",
+    ].join("\n");
+    const available = await runSandboxed("node", ["-e", probe, String(address.port)], options);
+    const blocked = await runSandboxed("node", ["-e", probe, String(address.port)], { ...options, offline: true });
 
-it.skipIf(process.platform !== "linux")("keeps Builder writes inside safe workspace paths", async () => {
+    expect(available.exitCode).toBe(0);
+    expect(blocked.exitCode).not.toBe(0);
+  } finally {
+    await new Promise<void>((resolveClose, reject) =>
+      server.close((error) => (error ? reject(error) : resolveClose())),
+    );
+  }
+});
+
+it.skipIf(!supportsLinuxRuntime)("denies Planner writes, host-home symlinks, and unrelated system files", async () => {
+  const fixtureData = await fixture();
+  const options = {
+    ...fixtureData,
+    ignorePaths: [],
+    access: "read_only" as const,
+    timeoutMs: 5000,
+  };
+  const deniedWrite = await runSandboxed("/bin/bash", ["-c", "printf blocked > blocked.txt"], options);
+  const outside = await runSandboxed("/bin/bash", ["-c", "test -r home-escape"], options);
+  const system = await runSandboxed("/bin/bash", ["-c", "test -e /etc/passwd -o -e /usr/local/share"], options);
+  expect(deniedWrite.exitCode).not.toBe(0);
+  expect(outside.exitCode).not.toBe(0);
+  expect(system.exitCode).not.toBe(0);
+  await expect(readFile(resolve(options.workspace, "blocked.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.skipIf(!supportsLinuxRuntime)("keeps Builder writes inside safe workspace paths", async () => {
   const fixtureData = await fixture();
   const options = {
     ...fixtureData,
