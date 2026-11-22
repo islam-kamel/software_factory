@@ -18,7 +18,7 @@ Before opening a pull request, read [AGENTS.md](AGENTS.md), [docs/architecture.m
    - `feat(agents): add security_auditor role prompt and config`
    - `feat(adapters): add groq llm provider adapter`
    - `fix(self_healing): trim stack trace noise in error_parser`
-4. **Open a Draft PR** with a clear description, test output, and any config/doc updates when the feature is in the PR delivery phase. Phase 1 orchestration itself records a reviewed result and does not create a PR.
+4. **Open a Draft PR** with a clear description, test output, and any config/doc updates. The managed Phase 2 API (`planManagedTicket` / `resumeManagedTicket`) automates Draft PR delivery through `src/adapters/git_host/` and notifications through `src/adapters/notifier/`, while the legacy Phase 1 API records a reviewed result without opening a PR.
 
 ---
 

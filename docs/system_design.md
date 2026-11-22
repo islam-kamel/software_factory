@@ -6,51 +6,49 @@ While `architecture.md` shows **what** the parts are, this document explains **h
 
 ## 1. End-to-End Execution Flow
 
-This sequence diagram shows the Phase 1 ticket lifecycle through a reviewed outcome and the deferred Phase 2 delivery steps.
+This sequence diagram shows the managed Phase 2 ticket lifecycle (`planManagedTicket` / `resumeManagedTicket`) from ticket claim through Draft PR delivery and verified worktree cleanup.
 
 ```mermaid
 sequenceDiagram
     actor Dev as Developer (You)
     participant TR as Tracker Adapter<br/>(GitHub/GitLab/Local)
-    participant ENG as Engine<br/>(Orchestrator)
+    participant ENG as Engine<br/>(Automation & State)
     participant PL as Planner Agent
     participant BL as Builder Agent
     participant SH as Self-Healing Loop
     participant RV as Reviewer Agent
-    participant NT as Notifier<br/>(Telegram/Discord)
+    participant GH as Git Host Adapter<br/>(Draft PR Only)
+    participant NT as Notifier<br/>(Console/Telegram)
 
     Dev->>TR: Create Ticket & mark as "ai-ready"
-    ENG->>TR: Fetch ready ticket & lock status ("ai-planning")
+    ENG->>TR: Claim ticket & lock status ("ai_planning")
     ENG->>PL: Send Ticket + AGENTS.md (Read-Only)
     PL-->>ENG: Return PLAN.md
-    ENG->>TR: Post PLAN.md & set status ("needs-approval")
+    ENG->>TR: Post PLAN.md (with planHash) & set "needs_approval"
     ENG->>NT: Notify Developer: "Plan is ready!"
 
     Dev->>TR: Review plan & reply "/approve"
-    ENG->>TR: Lock status ("ai-building")
-    ENG->>ENG: Validate caller-provided ai/ linked worktree
+    ENG->>TR: Verify planHash & lock status ("ai_building")
+    ENG->>ENG: Create isolated ai/issue-<id> Git Worktree
     ENG->>BL: Send PLAN.md + AGENTS.md
     BL-->>ENG: Write code & unit tests
 
-    loop Up to 3 Retries (Self-Healing)
-        ENG->>SH: Run project verify_command
+    loop Up to 3 Total Attempts (Self-Healing)
+        ENG->>SH: Run verifier (checks + protected-file diff gate)
         alt Checks Failed
-            SH-->>BL: Send cleaned error log
-            BL-->>ENG: Apply fix
+            SH-->>BL: Send bounded error_parser summary
+            BL-->>ENG: Apply repair fix
         else Checks Passed
             SH-->>ENG: Success!
         end
     end
 
-    ENG->>RV: Send git diff + Ticket (Fresh Context)
-    RV-->>ENG: Return Review Report
-    ENG->>TR: Record reviewed result ("ai_reviewing")
-
-    opt Phase 2 (deferred)
-        ENG->>TR: Open Draft PR & set status ("ai_pr_ready")
-        ENG->>ENG: Clean up factory-managed Git Worktree
-        ENG->>NT: Notify Developer that the Draft PR is ready
-    end
+    ENG->>RV: Send scoped git diff + Ticket (Fresh Context)
+    RV-->>ENG: Return Review Report (APPROVE_FOR_DRAFT_PR)
+    ENG->>GH: Push verified ai/ commit & open Draft PR (save receipt)
+    ENG->>ENG: Clean up owned Git Worktree
+    ENG->>TR: Set status "ai_pr_ready" (or recover from receipt)
+    ENG->>NT: Notify Developer: "Draft PR is ready!"
 ```
 
 ---
@@ -232,10 +230,10 @@ gantt
     Context, verifier, and orchestration       :p2, 0, 1
     Profile-backed Linux sandbox and real Agy  :p3, 1, 2
 
-    section Phase 2: Automation
-    Git worktree workspace manager             :p5, 2, 3
-    Self-healing 3-retry loop & diff guard     :p6, 2, 4
-    Draft PRs & Telegram/Discord notifier      :p7, 3, 4
+    section Phase 2: Automation (Automated acceptance complete)
+    Git worktree workspace manager & claims    :p5, 2, 3
+    Self-healing 3-attempt loop & diff gate    :p6, 2, 4
+    Draft PR delivery, receipts & notifiers    :p7, 3, 4
 
     section Phase 3: Infra & Network Hardening
     Offline verifier (--unshare-net)           :p8, 4, 5
@@ -248,7 +246,7 @@ gantt
     Parallel worktree execution & CI workflows :p13, 7, 8
 ```
 
-- **Phase 1 (MVP, acceptance complete):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, verifier, and plan/approval/build/review lifecycle. The profile-backed Linux sandbox checks and a real Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and did not open a PR. Codex and OpenCode have no live-provider acceptance. Phase 1 does not open a PR.
-- **Phase 2 (Hands-Free):** Add `git worktree`, atomic locking, the `self_healing` 3-retry loop, protected-file diff checks, Draft PRs, and notifications.
+- **Phase 1 (MVP, acceptance complete):** Local/GitHub trackers, OpenCode/Agy/Codex routes, context builder, verifier, and plan/approval/build/review lifecycle. The profile-backed Linux sandbox checks and a real Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and did not open a PR. Codex and OpenCode have no live-provider acceptance.
+- **Phase 2 (Hands-Free, automated acceptance complete):** Managed worktree creation and ownership-verified cleanup, local atomic ticket claims, up to 3 total verification attempts via `error_parser` + `retry_loop`, protected-file diff gating, Draft PR delivery with `delivery_pending` and receipt-based tracker recovery, and Console/Telegram notifications. Automated Linux verification passed (`162` tests); live GitHub and Telegram acceptance remains a separate operational follow-up.
 - **Phase 3 (Infra & Network Hardening):** Isolate `verifier` with `--unshare-net`, deploy the outbound-only `infra/` Nginx LLM Egress Proxy to keep raw API keys out of sandboxes and enforce `allow_cloud_llm: false` at the network layer, and add CPU/RAM/PID caps.
 - **Phase 4 (True No-Lock-in Scale):** Connect multiple existing projects via `repos.yaml`, run parallel worktrees safely on top of Phase 3 hardening, track run costs, and plug in local Ollama or additional adapters to test hot-swapping.

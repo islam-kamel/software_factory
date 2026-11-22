@@ -19,11 +19,11 @@ A **vendor-neutral, Linux-first ticket workflow** that plans, implements, verifi
 ```mermaid
 flowchart LR
     T["1. Ticket labeled<br/>ai-ready"] --> P["2. Planner<br/>(Read-Only -> PLAN.md)"]
-    P --> H["3. Human Approval<br/>(/approve)"]
-    H --> B["4. Builder<br/>(Isolated Worktree)"]
-    B --> V["5. Verify<br/>(Stop on first failure)"]
+    P --> H["3. Human Approval<br/>(/approve + planHash)"]
+    H --> B["4. Builder<br/>(Managed Worktree)"]
+    B --> V["5. Verify & Self-Heal<br/>(Up to 3 attempts + Diff Gate)"]
     V --> R["6. Reviewer<br/>(Fresh Context Diff)"]
-    R --> D["7. Reviewed outcome<br/>(External run artifacts)"]
+    R --> D["7. Draft PR & Notify<br/>(Receipt + Cleanup)"]
 ```
 
 ---
