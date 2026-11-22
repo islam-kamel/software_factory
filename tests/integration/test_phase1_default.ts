@@ -8,6 +8,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer, type Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -18,6 +19,7 @@ import type { ResolvedRepository } from "@/engine/config_schemas";
 
 const execFile = promisify(execFileCallback);
 const roots: string[] = [];
+const egressServers: Server[] = [];
 const originalRoot = process.env.SOFTWARE_FACTORY_ROOT;
 const originalPath = process.env.PATH;
 
@@ -31,7 +33,15 @@ type Fixture = {
   repository: ResolvedRepository;
   tracker: ReturnType<typeof createLocalMarkdownTracker>;
 };
-type FactoryFilesInput = { root: string; config: string; repositoryPath: string; check: string; fakeCli: string };
+type FactoryFilesInput = {
+  root: string;
+  config: string;
+  repositoryPath: string;
+  check: string;
+  fakeCli: string;
+  publicSocket: string;
+  localSocket: string;
+};
 
 async function git(args: string[], cwd?: string): Promise<void> {
   await execFile("git", args, { cwd });
@@ -45,6 +55,8 @@ async function makeFixture(check: string): Promise<Fixture> {
   const configDirectory = join(root, "config");
   const ticketsDirectory = join(root, "tickets");
   const outputDirectory = join(root, "runs");
+  const publicSocket = join(root, "public.sock");
+  const localSocket = join(root, "local.sock");
   // Keep the executable fixture off potentially noexec temporary filesystems.
   const fakeBin = await mkdtemp(join(process.cwd(), ".factory-default-phase1-bin-"));
   roots.push(fakeBin);
@@ -52,8 +64,17 @@ async function makeFixture(check: string): Promise<Fixture> {
   await writeFile(join(repositoryPath, "AGENTS.md"), "Synthetic repository rules\n");
   await writeFile(join(repositoryPath, "README.md"), "base\n");
   await initializeGit(repositoryPath, workspace);
+  await listenEgressSocket(publicSocket);
   await writeCli(fakeBin);
-  await writeFactoryFiles({ root, config: configDirectory, repositoryPath, check, fakeCli: join(fakeBin, "codex") });
+  await writeFactoryFiles({
+    root,
+    config: configDirectory,
+    repositoryPath,
+    check,
+    fakeCli: join(fakeBin, "opencode"),
+    publicSocket,
+    localSocket,
+  });
   process.env.SOFTWARE_FACTORY_ROOT = root;
   process.env.PATH = `${fakeBin}:${originalPath ?? "/usr/bin:/bin"}`;
   const repository = makeRepository(repositoryPath, check);
@@ -75,7 +96,7 @@ async function initializeGit(repository: string, workspace: string): Promise<voi
 }
 
 async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
-  const { root, config, repositoryPath: repository, check, fakeCli } = input;
+  const { root, config, repositoryPath: repository, check, fakeCli, publicSocket, localSocket } = input;
   await mkdir(join(root, "src/agents"), { recursive: true });
   const roles: Array<{ name: string; output: string; access: "read_only" | "read_write" }> = [
     { name: "planner", output: "PLAN.md", access: "read_only" },
@@ -91,8 +112,8 @@ async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
       stringify({ access: role.access, prompt_file: "prompt.md", output_file: role.output }),
     );
   }
-  const route = { cli: "codex", provider: "openai", model: "test-model" };
-  await writeFile(join(config, "factory.yaml"), stringify({ version: "1.0" }));
+  const route = { cli: "opencode", provider: "openai", model: "test-model" };
+  await writeEgressFactoryConfig(config, publicSocket, localSocket);
   await writeRuntimeProfile(config, fakeCli);
   await writeFile(
     join(config, "models.yaml"),
@@ -123,15 +144,29 @@ async function writeFactoryFiles(input: FactoryFilesInput): Promise<void> {
   );
 }
 
+async function writeEgressFactoryConfig(config: string, publicSocket: string, localSocket: string): Promise<void> {
+  await writeFile(
+    join(config, "factory.yaml"),
+    stringify({
+      version: "1.0",
+      egress_proxy: { enabled: true, public_socket: publicSocket, local_socket: localSocket },
+    }),
+  );
+}
+
 async function writeRuntimeProfile(config: string, fakeCli: string): Promise<void> {
   const [libraryDirectory, dynamicLoader] = getRuntimeLibraryPaths(process.arch);
   const files = [
+    [process.execPath, "/usr/local/bin/node"],
     ["/usr/bin/bash", "/bin/bash"],
     ["/usr/bin/dash", "/bin/sh"],
     [`${libraryDirectory}/libtinfo.so.6`, `${libraryDirectory}/libtinfo.so.6`],
     [`${libraryDirectory}/libc.so.6`, `${libraryDirectory}/libc.so.6`],
+    ...["libatomic.so.1", "libdl.so.2", "libm.so.6", "libstdc++.so.6", "libgcc_s.so.1", "libpthread.so.0"].map(
+      (library) => [`${libraryDirectory}/${library}`, `${libraryDirectory}/${library}`] as const,
+    ),
     [dynamicLoader, dynamicLoader],
-    [fakeCli, "/runtime/codex"],
+    [fakeCli, "/runtime/opencode"],
   ] as const;
   const mounts = await Promise.all(files.map(async ([source, target]) => ({ source: await realpath(source), target })));
   await writeFile(
@@ -139,7 +174,12 @@ async function writeRuntimeProfile(config: string, fakeCli: string): Promise<voi
     stringify({
       version: 1,
       mounts,
-      commands: { codex: "/runtime/codex", "/bin/bash": "/bin/bash", "/bin/sh": "/bin/sh" },
+      commands: {
+        node: "/usr/local/bin/node",
+        opencode: "/runtime/opencode",
+        "/bin/bash": "/bin/bash",
+        "/bin/sh": "/bin/sh",
+      },
     }),
   );
 }
@@ -155,7 +195,7 @@ function getRuntimeLibraryPaths(architecture: string): [string, string] {
 }
 
 async function writeCli(directory: string): Promise<void> {
-  const cli = join(directory, "codex");
+  const cli = join(directory, "opencode");
   const script = [
     "#!/bin/sh",
     'case "$*" in',
@@ -164,15 +204,15 @@ async function writeCli(directory: string): Promise<void> {
     "  *REVIEWER_ROLE*) text='**Verdict:** `APPROVE_FOR_DRAFT_PR`' ;;",
     "  *) exit 2 ;;",
     "esac",
-    'printf \'{"type":"item.completed","item":{"type":"agent_message","text":"%s"}}\\n\' "$text"',
-    'printf \'%s\\n\' \'{"type":"turn.completed","usage":{"input_tokens":2,"output_tokens":3}}\'',
+    'printf \'{"type":"text","part":{"text":"%s"}}\\n\' "$text"',
+    'printf \'%s\\n\' \'{"type":"step_finish","part":{"tokens":{"input":2,"output":3},"cost":0}}\'',
   ].join("\n");
   await writeFile(cli, script);
   await chmod(cli, 0o700);
 }
 
 function makeRepository(path: string, check: string): ResolvedRepository {
-  const route = { cli: "codex", provider: "openai", model: "test-model" };
+  const route = { cli: "opencode", provider: "openai", model: "test-model" };
   return {
     id: "sample",
     enabled: true,
@@ -264,8 +304,30 @@ afterEach(async () => {
   else process.env.SOFTWARE_FACTORY_ROOT = originalRoot;
   if (originalPath === undefined) delete process.env.PATH;
   else process.env.PATH = originalPath;
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  try {
+    await Promise.all(
+      egressServers
+        .splice(0)
+        .map(
+          (server) =>
+            new Promise<void>((resolveClose, rejectClose) =>
+              server.close((error) => (error ? rejectClose(error) : resolveClose())),
+            ),
+        ),
+    );
+  } finally {
+    await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  }
 });
+
+async function listenEgressSocket(path: string): Promise<void> {
+  const server = createServer((socket) => socket.end());
+  await new Promise<void>((resolveListen, reject) => {
+    server.once("error", reject);
+    server.listen(path, resolveListen);
+  });
+  egressServers.push(server);
+}
 
 describe.skipIf(process.platform !== "linux")("Default Phase 1 lifecycle", () => {
   it("uses the real runner and sandboxed verifier through review", completeDefaultLifecycle);

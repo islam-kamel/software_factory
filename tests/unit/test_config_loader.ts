@@ -60,11 +60,8 @@ it("merges model roles, defaults, repo context and overrides without loading dis
   const [baseRepo, overriddenRepo, disabledRepo] = loaded.config.repos;
 
   expect(baseRepo?.agents.builder.provider).toBe("opencode-go");
-  expect(overriddenRepo?.agents.builder).toMatchObject({
-    cli: "copilot-cli",
-    provider: "github-copilot",
-    model: "glm-5.3",
-  });
+  expect(overriddenRepo?.agents.builder).toMatchObject({ cli: "opencode", provider: "opencode-go", model: "glm-5.3" });
+  expect(overriddenRepo?.max_retries).toBe(2);
   expect(overriddenRepo?.context?.repo_files).toEqual(["AGENTS.md", ".factory/AGENTS.md"]);
   expect(disabledRepo?.agents.planner.provider).toBe("ollama-local");
   expect(loaded.config.defaults?.agents?.builder?.provider).toBe("opencode-go");
@@ -89,16 +86,30 @@ it("validates egress socket paths and supplies bounded resource defaults", () =>
   ).toBe(false);
 });
 
-it("does not resolve provider credentials in egress mode", async () => {
+it.each([
+  {
+    label: "disabled proxy",
+    update: (factory: Record<string, unknown>) => {
+      factory.egress_proxy = {
+        enabled: false,
+        public_socket: "/run/factory/public.sock",
+        local_socket: "/run/factory/local.sock",
+      };
+    },
+  },
+  { label: "missing proxy config", update: () => {} },
+  {
+    label: "omitted proxy enabled flag",
+    update: (factory: Record<string, unknown>) => {
+      factory.egress_proxy = { public_socket: "/run/factory/public.sock", local_socket: "/run/factory/local.sock" };
+    },
+  },
+])("never resolves provider credentials with $label", async ({ update }) => {
   vi.stubEnv("GITHUB_TOKEN", "test-github-token");
-  vi.stubEnv("OPENROUTER_API_KEY", "must-not-be-read");
-  vi.stubEnv("OPENCODE_API_KEY", "must-not-be-read");
+  vi.stubEnv("OPENROUTER_API_KEY", "");
+  vi.stubEnv("OPENCODE_API_KEY", "");
   const factory = readYamlRecord(readFileSync(join(configDir, "factory.yaml"), "utf8"));
-  factory.egress_proxy = {
-    enabled: true,
-    public_socket: "/run/factory/public.sock",
-    local_socket: "/run/factory/local.sock",
-  };
+  update(factory);
   const factoryPath = createTemporaryFile("factory.yaml", stringify(factory));
 
   const loaded = await loadConfig({
@@ -126,6 +137,8 @@ it("resolves only the explicitly selected repository credentials", async () => {
   });
 
   expect(loaded.secrets.get("GITHUB_TOKEN")).toBe("test-github-token");
+  expect(loaded.secrets.has("OPENROUTER_API_KEY")).toBe(false);
+  expect(loaded.secrets.has("OPENCODE_API_KEY")).toBe(false);
   expect(loaded.secrets.get("CLIENT_DASHBOARD_GH_TOKEN")).toBeUndefined();
 });
 
@@ -224,17 +237,19 @@ it("rejects explicitly selecting a disabled repository before resolving credenti
   await expect(loadConfig(options)).rejects.toThrow(/disabled.*enabled: true/i);
 });
 
-it("names missing secret variables without exposing secret values", async () => {
+it("does not require provider keys while preserving tracker secret validation", async () => {
   stubExampleEnvironment();
   vi.stubEnv("OPENCODE_API_KEY", "");
 
-  await expect(
-    loadConfig({
-      factoryPath: join(configDir, "factory.yaml"),
-      modelsPath: join(configDir, "models.yaml"),
-      reposPath: exampleReposPath,
-    }),
-  ).rejects.toThrow(/OPENCODE_API_KEY/);
+  const loaded = await loadConfig({
+    factoryPath: join(configDir, "factory.yaml"),
+    modelsPath: join(configDir, "models.yaml"),
+    reposPath: exampleReposPath,
+    repoId: "ecommerce-api",
+  });
+
+  expect(loaded.secrets.has("OPENCODE_API_KEY")).toBe(false);
+  expect(loaded.secrets.get("GITHUB_TOKEN")).toBe("test-github-token");
 });
 
 it("requires tracker tokens for enabled repositories", async () => {

@@ -9,8 +9,8 @@ A **vendor-neutral, Linux-first ticket workflow** that plans, implements, verifi
 - **Small, Focused Agent Roles:** Work is split into **Planner** (read-only), **Builder** (write + test), and **Reviewer** (fresh-context diff audit) so no single session loses focus.
 - **Deterministic Verification:** Configured `secret_scan`, `lint`, `typecheck`, and `test` checks run in order. Managed runs allow up to three total verification attempts, including the first attempt.
 - **Linux Isolation:** Child commands run through Bubblewrap (`bwrap`) with user namespaces and scoped workspace access. Legacy calls accept a caller-provided linked worktree; managed calls create an isolated worktree outside the repository.
-- **Configurable CLI and Trackers:** OpenCode, Agy, and Codex runners plus Local Markdown and GitHub trackers are selected through configuration; OpenCode remains the default.
-- **Privacy & Fail-Closed Security:** Supports per-repo `ignore_paths`, pre-push secret scanning (`gitleaks`), Zero-Footprint external contexts, and `allow_cloud_llm: false` fail-closed routing. Protected runs receive no raw Git metadata.
+- **Supported Agent Route:** Planner, Builder, and Reviewer run through OpenCode and the approved egress proxy. Agy and Codex adapter contracts remain available for future routing, but the current agent entry point rejects them.
+- **Privacy & Fail-Closed Security:** Agent sandboxes always run offline and receive only the Unix socket selected by provider locality and repository privacy. Disabled or invalid proxy settings stop the run before artifacts or processes are created. Provider keys stay with the proxy; the factory resolves tracker tokens only.
 
 ---
 
@@ -46,11 +46,12 @@ yarn verify
    cp .env.example .env
    ```
 
-   Fill in only the keys for the providers and trackers you use (`.env` is gitignored).
+   Put tracker and notifier tokens in the factory runtime environment. Put upstream LLM keys in the Compose
+   environment used by the egress proxy; the factory does not load or pass provider keys (`.env` is gitignored).
 
 2. **Configure global adapters and models:**
    Review and adjust [config/factory.yaml](config/factory.yaml) and [config/models.yaml](config/models.yaml).
-   Egress proxy setup, supported routes, and Linux resource limits are documented in the
+   Required egress proxy setup, supported routes, and Linux resource limits are documented in the
    [integration guide](INTEGRATION_GUIDE.md#phase-3-egress-proxy-and-resource-limits).
 
 3. **Register your repositories:**
@@ -161,7 +162,7 @@ software_factory/
 
 ## Build Roadmap
 
-- **Phase 1 (MVP):** Linux runtime-profile sandbox checks and a real Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and a synthetic repository; it did not create a PR. Codex and OpenCode have adapter tests, not live-provider tests. See the [runtime profile and acceptance details](INTEGRATION_GUIDE.md#required-linux-runtime-profile).
+- **Phase 1 (MVP):** Linux runtime-profile sandbox checks and a historical Agy lifecycle passed on Debian 13 ARM64. The test used synthetic local approval and a synthetic repository; it did not create a PR. Current agent runs support OpenCode through the required proxy; Agy and Codex are not accepted by the production agent entry point. See the [runtime profile and acceptance details](INTEGRATION_GUIDE.md#required-linux-runtime-profile).
 - **Phase 2 (Automation):** Managed lifecycle APIs and synthetic tests are implemented. Live GitHub Draft PR delivery, Telegram notification, and full Linux managed lifecycle acceptance remain unverified.
-- **Phase 3 (Infra & Network Hardening):** Offline verifier (`--unshare-net`), outbound-only `infra/` Nginx LLM Egress Proxy (API key injection + network-level `allow_cloud_llm: false`), and sandbox resource caps.
+- **Phase 3 (Infra & Network Hardening):** The verifier and all agent runs use offline Bubblewrap namespaces. Every agent requires the Nginx egress proxy, which injects provider credentials and routes local Ollama through the local-only socket while repository privacy gates cloud routes. CPU, memory, PID, and runtime caps apply to child processes.
 - **Phase 4 (Multi-Repo & Scale):** Multi-repo runner via `config/repos.yaml`, parallel worktrees, cost telemetry, and local Ollama hot-swapping.

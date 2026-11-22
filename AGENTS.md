@@ -28,7 +28,7 @@ docs/               # Architecture and system design specifications
 logs/               # Runtime logs and cost/run history (never commit sensitive output)
 ```
 
-Production child execution requires Linux Bubblewrap (`bwrap`) with user namespaces. Use a dedicated unprivileged service account and home directory for native CLI cached authentication. Legacy Phase 1 calls use a caller-provided `ai/` linked worktree. Managed Phase 2 calls require an absolute `worktree_root`, resolve symlinked ancestors before directory creation, create an `ai/issue-<id>` worktree after approval, claim tickets under one canonical local root shared by participating processes, and support up to three total verification attempts by default. Phase 2 delivery creates Draft PRs containing the full Reviewer report in the PR body. An uncertain PR creation response remains `delivery_pending` and requires manual reconciliation; creation is not automatically retried. Full verifier logs are kept in private external run directories; cleanup verifies ownership before removal. A crash or failed ownership check requires operator inspection and recovery. Claims do not coordinate across independent hosts or automatically take over stale state.
+Production agent execution requires Linux Bubblewrap (`bwrap`) with user namespaces and an enabled, reachable approved OpenCode egress proxy. Every agent sandbox is offline and exposes only the privacy-selected proxy socket. Missing or disabled proxy configuration, unsupported CLI/provider routes, and invalid sockets fail before run artifacts or processes are created. Provider API keys are held by the proxy and are never resolved by the factory or passed to an agent. Managed Phase 2 calls require an absolute `worktree_root`, resolve symlinked ancestors before directory creation, create an `ai/issue-<id>` worktree after approval, claim tickets under one canonical local root shared by participating processes, and support up to three total verification attempts by default. Phase 2 delivery creates Draft PRs containing the full Reviewer report in the PR body. An uncertain PR creation response remains `delivery_pending` and requires manual reconciliation; creation is not automatically retried. Full verifier logs are kept in private external run directories; cleanup verifies ownership before removal. A crash or failed ownership check requires operator inspection and recovery. Claims do not coordinate across independent hosts or automatically take over stale state.
 
 ---
 
@@ -43,7 +43,7 @@ Production child execution requires Linux Bubblewrap (`bwrap`) with user namespa
 4. **Safe Git Isolation:** Never edit, commit, or push directly to `main` or `develop`. Always work in an isolated `git worktree` on a branch prefixed with `ai/` (e.g., `ai/issue-42`) and open **Draft PRs** only.
 5. **Real Verification Over Assumptions:** Never claim code works without running the configured verification command (lint, typecheck, tests, build).
 6. **Hard Circuit Breakers:** Enforce `max_self_heal_retries` (default: `3`) and `agent_timeout_minutes` (default: `15`). On hitting the limit, stop immediately, save logs, mark state `ai_failed`, and notify the developer.
-7. **Secret Isolation & Fail-Closed Privacy:** Never commit API keys, tokens, `.env` files, or `config/repos.yaml` (commit `config/repos.example.yaml` instead and reference secrets via `token_env`). Enforce `privacy.allow_cloud_llm: false` fail-closed and run `verification.secret_scan` before pushing.
+7. **Secret Isolation & Fail-Closed Privacy:** Never commit API keys, tokens, `.env` files, or `config/repos.yaml` (commit `config/repos.example.yaml` instead). The factory resolves tracker credentials only; provider API keys belong to the trusted egress proxy and never enter agent configuration or environments. Agent runs require the enabled proxy and fail closed when it is missing, disabled, unsupported, or unreachable. Enforce `privacy.allow_cloud_llm: false` fail-closed and run `verification.secret_scan` before pushing.
 8. **Minimal, Scoped Diffs:** Change only what the ticket requires. Do not reformat unrelated files or refactor untouched modules.
 
 ### Protected Files (Do Not Touch Without Explicit Approval)
@@ -137,17 +137,17 @@ API_KEY = "sk-or-v1-hardcoded-secret"
 MODEL = "anthropic/claude-sonnet"
 ```
 
-**Right (`✅`)** — Reading secrets from environment variables and models from `config/models.yaml`:
+**Right (`✅`)** — Read tracker credentials from environment variables; keep provider credentials in the trusted egress proxy:
 
 ```python
 import os
 
-api_key = os.environ.get("OPENROUTER_API_KEY")
-if not api_key:
-    raise RuntimeError("Missing required env var: OPENROUTER_API_KEY")
+tracker_token = os.environ.get("GITHUB_TOKEN")
+if not tracker_token:
+    raise RuntimeError("Missing required env var: GITHUB_TOKEN")
 
 role_config = load_role_config("config/models.yaml", role="planner")
-model = role_config["model"]
+model = role_config["model"]  # Provider credentials stay outside the factory.
 ```
 
 ---
