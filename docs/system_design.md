@@ -159,6 +159,18 @@ No matter which CLI tool (`opencode`, `aider`, `claude`) or LLM provider runs, `
 
 `tokens_used` and `estimated_cost_usd` are nullable because native CLI runners may not expose reliable usage or cost data. `null` means unavailable; numeric zero means measured zero.
 
+For each Planner, Builder, and Reviewer attempt, the runner also writes captured stderr unchanged to `stderr.log`
+in that attempt's private output directory, including when the process succeeds with warnings or exits by
+failure, timeout, or output limit. A centralized `writeRunLog` function creates log files exclusively with owner-only permissions;
+the caller validates that the run directory is private and external to the workspace. Raw log files are not
+automatically attached to `AgentResult`, managed API responses, pull requests, or notifications. New agent
+failure summaries contain only the private log path and safe process metadata. Existing verifier summaries
+retain their current behavior and may include focused command diagnostics or snippets. Logs may contain
+sensitive data, so operators must inspect them locally and keep them private. Capture remains bounded to 8 MiB
+per stream, and the log contains only output actually captured. Failures before sandbox capture begins cannot
+produce a stderr log; a returned result creates one even when stderr is empty. Existing runs are not backfilled.
+See [the integration guide](../INTEGRATION_GUIDE.md) for operator steps.
+
 ### C. Standard `VerificationResult` Object (Output of `src/self_healing/verifier`)
 
 ```json

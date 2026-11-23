@@ -187,6 +187,25 @@ required DNS alias:
 docker network connect --alias ollama software-factory-egress <ollama-container>
 ```
 
+### Private Run Diagnostics
+
+After installing a build with centralized run logging, each Planner, Builder, and Reviewer attempt stores its
+captured stderr unchanged in `stderr.log` inside that attempt's private output directory, including successful
+runs with warnings and runs that fail, time out, or hit the output limit. For example, inspect a Builder log
+locally with `cat "/path/to/private-runs/repo-id/issue-id/run-id/builder-attempt-id/stderr.log"`. The factory
+keeps run artifacts outside the repository workspace and limits the directory to its owner. Do not copy raw
+logs into tickets, prompts, pull requests,
+or notifications because they can contain sensitive data. These raw log files are not automatically attached
+to those outputs. New agent failure summaries contain the private log path and safe process metadata; existing
+verifier summaries retain their current behavior and may include focused command diagnostics or snippets.
+
+The shared `writeRunLog` function writes supplied log text without redaction or truncation, using an
+exclusive file create and private permissions. Captured output remains bounded by the configured runner
+limits (currently 8 MiB per stream); logging preserves only text the runner captured and cannot recover
+output omitted after a limit is reached. Failures before sandbox capture begins cannot produce a stderr log;
+a returned result creates one even when stderr is empty. This does not backfill logs for older runs. The new files are available only after
+installing a build that includes this change; it does not indicate that a remote factory has been updated.
+
 The shipped `config/factory.yaml` enables the proxy. Start the proxy before running an agent; setting
 `egress_proxy.enabled: false`, omitting the proxy configuration, or leaving its socket unavailable blocks
 agent execution. Configure the repository's privacy policy normally. Cloud credentials are needed only for
@@ -280,7 +299,7 @@ verification:
 
 If the known receipt was saved and owned-worktree cleanup succeeded, a tracker read or `ai_pr_ready` update failure releases only the run's active execution while preserving its receipt and outer ticket claim. Resume using the same `runFile` reconciles `ai_reviewing` to `ai_pr_ready`, or accepts an already-ready ticket, then finishes the claim without repeating approval, agents, worktree creation, verification, commit, push, or PR creation. Any other ticket state requires manual reconciliation and is not overwritten. A live active execution stays protected; abandoned active state and crash, receipt-persistence, or cleanup uncertainty require operator inspection, with no automatic stale-claim takeover. Unknown PR creation remains `delivery_pending` and is never retried automatically.
 
-Plan first, then wait for a human to approve the exact plan hash through the configured tracker. Persist the returned `runFile` and pass it to `resumeManagedTicket` after approval. The plan and run artifacts live under the caller's trusted external `outputDirectory`. Verifier full logs, when produced, are stored under the run's `verification-logs` directory with private permissions; repair feedback uses a bounded parsed summary. Notifications contain only the ticket ID, repository ID, state, and Draft URL when available.
+Plan first, then wait for a human to approve the exact plan hash through the configured tracker. Persist the returned `runFile` and pass it to `resumeManagedTicket` after approval. The plan and run artifacts live under the caller's trusted external `outputDirectory`. Verifier full logs, when produced, are stored under the run's `verification-logs` directory with private permissions; repair feedback uses a bounded parsed summary. Planner, Builder, and Reviewer stderr is kept in each attempt's private output directory as `stderr.log`; raw log files are not automatically attached to `AgentResult`, API responses, pull requests, or notifications. New agent failure summaries contain only the private log path and safe process metadata. Existing verifier summaries retain their current behavior and may include focused command diagnostics or snippets. Notifications contain only the ticket ID, repository ID, state, and Draft URL when available.
 
 The default notifier is console. Set `adapters.notifier: "telegram"` or the repository's `notifications.external.provider: "telegram"` to select Telegram; provide `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the runtime environment. Set `adapters.notifier: "none"` to disable notifications. Setting `notifications.external.enabled: false` selects console fallback unless the global notifier is `none`. Telegram delivery has mocked tests only, not live acceptance.
 
@@ -294,7 +313,7 @@ Phase 2 unit tests use synthetic local Git repositories and mocked HTTP. They do
 
 ## 6. Troubleshooting & Guardrails
 
-- **Ticket marked `ai_failed`:** The managed retry limit was reached or a hard verification gate failed. `limits.max_self_heal_retries` is the total number of verification attempts (default `3`), so there can be at most two repair Builder runs. Inspect the bounded summary and the private `verification-logs` under the external run-artifact directory; do not copy raw logs into prompts or notifications.
+- **Ticket marked `ai_failed`:** The managed retry limit was reached or a hard verification gate failed. `limits.max_self_heal_retries` is the total number of verification attempts (default `3`), so there can be at most two repair Builder runs. Inspect the summary and private logs under the external run-artifact directory: verifier logs are in `verification-logs`, and Builder stderr is in the attempt output directory as `stderr.log`. Existing verifier summaries may include focused command diagnostics or snippets. Do not publish raw log files; they may contain sensitive data.
 - **Engine refuses to start on a confidential repo:** Verify `egress_proxy.enabled: true`, that the proxy and local socket are ready, and that each role uses the supported local Ollama route. A cloud provider remains blocked when `privacy.allow_cloud_llm: false`.
 - **Secret scan failure:** A secret or credential pattern was detected by `verification.secret_scan`. Remove the secret from the diff/test fixture before re-running.
 - **Avoid duplicate `AGENTS.md` context:** The context builder includes the selected root instruction inline once and runners disable CLI project auto-loading. Other repo instruction files are passed as safe path pointers; ignored paths are not read.

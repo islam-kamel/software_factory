@@ -6,16 +6,17 @@
 // API Doc : docs/implementation_plan.md, Deterministic Verifier and Protected Files Gate
 // ============================================================
 import { randomUUID } from "node:crypto";
-import { lstat, mkdir, mkdtemp, open, realpath, rm } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { runSandboxed, type SandboxResult } from "@/adapters/cli_runner/sandbox";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { runSandboxed, SandboxCleanupError, type SandboxResult } from "@/adapters/cli_runner/sandbox";
 import { loadSandboxRuntimeProfile, type SandboxRuntimeProfile } from "@/adapters/cli_runner/runtime_profile";
 import { getChangedPaths } from "@/adapters/git_host/workspace";
 import { assertBuilderWorkspace } from "@/adapters/cli_runner/workspace";
 import { isIgnoredPath } from "@/engine/context_builder";
 import type { ResolvedRepository } from "@/engine/config_schemas";
 import type { VerificationResult } from "@/engine/contracts";
+import { writeRunLog } from "@/engine/run_log";
 import { parseErrorSummary } from "@/self_healing/error_parser";
 import { DEFAULT_RESOURCE_LIMITS, type ResourceLimits } from "@/engine/config_schemas";
 
@@ -141,17 +142,14 @@ async function writeFailureLog(input: {
   step: CheckStep;
   attempt: number;
   output: string;
-}): Promise<void> {
-  if (!input.options.logDirectory) return;
+}): Promise<string | undefined> {
+  if (!input.options.logDirectory) return undefined;
   const directory = await prepareLogDirectory(input.options);
-  const path = join(directory, `verification-${randomUUID()}-${input.step}-${input.attempt}.log`);
-  const file = await open(path, "wx", 0o600);
-  try {
-    await file.writeFile(input.output, "utf8");
-    await file.sync();
-  } finally {
-    await file.close();
-  }
+  return writeRunLog({
+    directory,
+    fileName: `verification-${randomUUID()}-${input.step}-${input.attempt}.log`,
+    content: input.output,
+  });
 }
 
 async function protectedFailure(options: VerifyOptions, attempt: number): Promise<VerificationResult | null> {
@@ -174,15 +172,17 @@ async function failedCheckResult(input: {
   step: CheckStep;
   output: string;
   summary?: string;
+  includeLogPath?: boolean;
 }): Promise<VerificationResult> {
   const protectedResult = await protectedFailure(input.options, input.attempt);
   if (protectedResult) return protectedResult;
   try {
-    await writeFailureLog(input);
+    const logPath = await writeFailureLog(input);
+    const summary = input.includeLogPath && logPath ? `${input.summary}: ${logPath}` : input.summary;
+    return failedResult(input.attempt, input.step, summary ?? parseErrorSummary(input.output));
   } catch {
     return failedResult(input.attempt, "logging", "Unable to save verification failure log");
   }
-  return failedResult(input.attempt, input.step, input.summary ?? parseErrorSummary(input.output));
 }
 
 async function withScratch<T>(workspace: string, run: (scratchDirectory: string) => Promise<T>): Promise<T> {
@@ -318,7 +318,18 @@ async function runSteps(input: {
     let result: SandboxResult;
     try {
       result = await runner(step, command, createCheckSandboxOptions(input));
-    } catch {
+    } catch (error) {
+      if (error instanceof SandboxCleanupError) {
+        const result = error.result;
+        return failedCheckResult({
+          options,
+          attempt,
+          step,
+          output: `${result.stderr}\n${result.stdout}`,
+          summary: "Unable to confirm sandbox cleanup",
+          includeLogPath: true,
+        });
+      }
       return failedCheckResult({ options, attempt, step, output: "", summary: "Unable to start verification command" });
     }
     const output = `${result.stderr}\n${result.stdout}`;
