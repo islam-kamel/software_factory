@@ -12,6 +12,8 @@ A **vendor-neutral, Linux-first ticket workflow** that plans, implements, verifi
 - **Supported Agent Route:** Planner, Builder, and Reviewer run through OpenCode and the approved egress proxy. Agy and Codex adapter contracts remain available for future routing, but the current agent entry point rejects them.
 - **Privacy & Fail-Closed Security:** Agent sandboxes always run offline and receive only the Unix socket selected by provider locality and repository privacy. Disabled or invalid proxy settings stop the run before artifacts or processes are created. Provider keys stay with the proxy; the factory resolves tracker tokens only.
 
+For private per-attempt stderr logs from Planner, Builder, and Reviewer, see [Private Run Diagnostics](INTEGRATION_GUIDE.md#private-run-diagnostics).
+
 ---
 
 ## How It Works

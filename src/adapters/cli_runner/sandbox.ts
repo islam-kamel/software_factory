@@ -48,6 +48,20 @@ export type SandboxResult = {
   outputLimit: boolean;
 };
 
+export class SandboxCleanupError extends Error {
+  readonly #result: SandboxResult;
+
+  constructor(result: SandboxResult) {
+    super("Unable to confirm sandbox resource scope cleanup");
+    this.#result = result;
+    this.name = "SandboxCleanupError";
+  }
+
+  get result(): SandboxResult {
+    return this.#result;
+  }
+}
+
 export type HiddenPath = { path: string; isDirectory: boolean };
 
 const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
@@ -385,17 +399,17 @@ async function finishProcess(
   if (state.settled) throw new Error("Sandbox process settled more than once");
   state.settled = true;
   for (const timer of timers) if (timer) clearTimeout(timer);
-  stopper.stop();
-  await stopper.wait();
-  const error = stopper.error();
-  if (error) throw error;
-  return {
+  const result = {
     exitCode: code,
     stdout: state.stdout,
     stderr: state.stderr,
     timedOut: state.timedOut,
     outputLimit: state.outputLimit,
   };
+  stopper.stop();
+  await stopper.wait();
+  if (stopper.error()) throw new SandboxCleanupError(result);
+  return result;
 }
 
 function runProcess(options: ProcessOptions): Promise<SandboxResult> {

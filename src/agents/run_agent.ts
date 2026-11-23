@@ -8,7 +8,7 @@
 import { createAgyInvocation, parseAgyOutput } from "@/adapters/cli_runner/agy";
 import { createCodexInvocation, parseCodexOutput } from "@/adapters/cli_runner/codex";
 import { createOpenCodeInvocation, parseOpenCodeOutput } from "@/adapters/cli_runner/opencode";
-import { runSandboxed } from "@/adapters/cli_runner/sandbox";
+import { runSandboxed, SandboxCleanupError, type SandboxOptions } from "@/adapters/cli_runner/sandbox";
 import { createOpenCodeEgressConfig, getOpenCodeEgressBaseUrl } from "@/adapters/llm/egress_proxy";
 import { loadSandboxRuntimeProfile, type SandboxRuntimeProfile } from "@/adapters/cli_runner/runtime_profile";
 import { assertBuilderWorkspace, assertRepositoryWorkspace } from "@/adapters/cli_runner/workspace";
@@ -23,6 +23,7 @@ import {
   getResourceLimits,
 } from "@/engine/config_schemas";
 import { isIgnoredPath } from "@/engine/context_builder";
+import { writeRunLog } from "@/engine/run_log";
 import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
@@ -104,12 +105,28 @@ async function readRole(root: string, role: AgentRole): Promise<RoleMetadata> {
 }
 
 async function ensureOutputDirectory(workspace: string, requested: string): Promise<string> {
-  await mkdir(requested, { recursive: true, mode: 0o700 });
-  const output = await realpath(requested);
+  const directory = resolve(requested);
+  const existing = await existingPath(directory);
+  if (existing?.isSymbolicLink()) throw new Error("Agent output directory cannot be a symlink");
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const details = await lstat(directory);
+  if (!details.isDirectory() || details.isSymbolicLink() || (details.mode & 0o077) !== 0) {
+    throw new Error("Agent output directory must be private");
+  }
+  const output = await realpath(directory);
   if (isInside(workspace, output) || isInside(output, workspace))
     throw new Error("Agent outputs must be outside the repository");
   if ((await readdir(output)).length > 0) throw new Error("Agent output directory must be empty");
   return output;
+}
+
+async function existingPath(path: string) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return undefined;
+    throw error;
+  }
 }
 
 async function readPrompt(path: string, workspace: string, ignorePaths: string[]): Promise<string> {
@@ -201,6 +218,7 @@ type PreparedAgentRun = {
   resourceLimits: ReturnType<typeof getResourceLimits>;
   egressSocket: string;
   egressConfigPath: string;
+  failureDetails?: RunFailureDetails;
 };
 
 function selectEgressSocket(input: {
@@ -393,7 +411,52 @@ async function executePreparedRun(options: RunAgentOptions, prepared: PreparedAg
   const runner = runnerFor(prepared.route.cli);
   const invocation = runner.create(request);
   assertNoProxyCredential(invocation.env);
-  const execution = await runSandboxed(invocation.command, invocation.args, {
+  const execution = await getSandboxResult(invocation, request, prepared);
+  const stderrFile = await persistStderr(prepared, execution.stderr);
+  const details = {
+    stderrFile,
+    exitCode: execution.exitCode,
+    timedOut: execution.timedOut,
+    outputLimit: execution.outputLimit,
+    cleanupFailed: false,
+  } satisfies RunFailureDetails;
+  prepared.failureDetails = details;
+  if (execution.timedOut || execution.outputLimit || execution.exitCode !== 0) {
+    throw new RunFailure(details);
+  }
+  let output: ReturnType<typeof runner.parse>;
+  try {
+    output = runner.parse(execution.stdout);
+    if (!output.text.trim()) throw new Error();
+  } catch {
+    throw new RunFailure(details);
+  }
+  try {
+    await writeExclusive(prepared.outputFile, output.text);
+    return AgentResultSchema.parse({
+      role: options.role,
+      status: "success",
+      provider_used: prepared.route.provider,
+      model_used: prepared.route.model,
+      duration_seconds: 0,
+      tokens_used: output.tokensUsed,
+      estimated_cost_usd: output.costUsd,
+      output_file: prepared.outputFile,
+    });
+  } catch {
+    throw new RunFailure(details);
+  }
+}
+
+type CliInvocation = ReturnType<ReturnType<typeof runnerFor>["create"]>;
+type SandboxExecution = Awaited<ReturnType<typeof runSandboxed>>;
+
+async function getSandboxResult(
+  invocation: CliInvocation,
+  request: CliRequest,
+  prepared: PreparedAgentRun,
+): Promise<SandboxExecution> {
+  const sandboxOptions: SandboxOptions = {
     workspace: prepared.workspace,
     ignorePaths: prepared.repository.privacy.ignore_paths ?? [],
     access: prepared.metadata.access === "read_only" ? "read_only" : "workspace_write",
@@ -411,22 +474,61 @@ async function executePreparedRun(options: RunAgentOptions, prepared: PreparedAg
       dirname(prepared.resultFile),
     ],
     env: invocation.env,
-  });
-  if (execution.timedOut || execution.outputLimit || execution.exitCode !== 0)
-    throw new Error("CLI execution did not complete successfully");
-  const output = runner.parse(execution.stdout);
-  if (!output.text.trim()) throw new Error("CLI returned no agent output");
-  await writeExclusive(prepared.outputFile, output.text);
-  return AgentResultSchema.parse({
-    role: options.role,
-    status: "success",
-    provider_used: prepared.route.provider,
-    model_used: prepared.route.model,
-    duration_seconds: 0,
-    tokens_used: output.tokensUsed,
-    estimated_cost_usd: output.costUsd,
-    output_file: prepared.outputFile,
-  });
+  };
+  try {
+    return await runSandboxed(invocation.command, invocation.args, sandboxOptions);
+  } catch (error) {
+    if (!(error instanceof SandboxCleanupError)) throw error;
+    const captured = error.result;
+    const stderrFile = await persistStderr(prepared, captured.stderr);
+    const details = {
+      stderrFile,
+      exitCode: captured.exitCode,
+      timedOut: captured.timedOut,
+      outputLimit: captured.outputLimit,
+      cleanupFailed: true,
+    } satisfies RunFailureDetails;
+    prepared.failureDetails = details;
+    throw new RunFailure(details);
+  }
+}
+
+type RunFailureDetails = {
+  stderrFile?: string;
+  exitCode?: number | null;
+  timedOut?: boolean;
+  outputLimit?: boolean;
+  cleanupFailed?: boolean;
+  logFailed?: boolean;
+};
+
+class RunFailure extends Error {
+  constructor(readonly details: RunFailureDetails) {
+    super(failureSummary(details).trim());
+  }
+}
+
+async function persistStderr(prepared: PreparedAgentRun, stderr: string): Promise<string> {
+  try {
+    return await writeRunLog({ directory: dirname(prepared.resultFile), fileName: "stderr.log", content: stderr });
+  } catch {
+    prepared.failureDetails = { logFailed: true };
+    throw new RunFailure(prepared.failureDetails);
+  }
+}
+
+function failureSummary(details?: RunFailureDetails): string {
+  if (details?.logFailed) return "Agent run failed. stderr.log could not be persisted.\n";
+  if (!details?.stderrFile) return "Agent run failed before stderr was captured.\n";
+  return [
+    "Agent run failed.",
+    `stderr.log: ${details.stderrFile}`,
+    `exitCode=${details.exitCode}`,
+    `timedOut=${details.timedOut}`,
+    `outputLimit=${details.outputLimit}`,
+    `cleanupFailed=${details.cleanupFailed}`,
+    "",
+  ].join("\n");
 }
 
 function createPreparedCliRequest(options: RunAgentOptions, prepared: PreparedAgentRun): CliRequest {
@@ -454,12 +556,19 @@ function assertNoProxyCredential(environment: NodeJS.ProcessEnv): void {
 export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
   const prepared = await prepareAgentRun(options);
   const started = Date.now();
+  let scratchCleanupFailed = false;
   let result: AgentResult;
   try {
     result = await executePreparedRun(options, prepared);
     result.duration_seconds = (Date.now() - started) / 1000;
-  } catch {
-    await writeExclusive(prepared.outputFile, "Agent run failed. Check the safe CLI diagnostic on stderr.\n");
+  } catch (error) {
+    const details = error instanceof RunFailure ? error.details : prepared.failureDetails;
+    try {
+      await writeExclusive(prepared.outputFile, failureSummary(details));
+    } catch {
+      if (details) throw new RunFailure(details);
+      throw new Error("Agent failure summary could not be persisted");
+    }
     result = failedResult({
       role: options.role,
       repository: prepared.repository,
@@ -467,9 +576,22 @@ export async function runAgent(options: RunAgentOptions): Promise<AgentResult> {
       duration: (Date.now() - started) / 1000,
     });
   } finally {
-    await rm(prepared.scratchDirectory, { recursive: true, force: true });
+    try {
+      await rm(prepared.scratchDirectory, { recursive: true, force: true });
+    } catch {
+      scratchCleanupFailed = true;
+    }
   }
-  await writeExclusive(prepared.resultFile, JSON.stringify(result, null, 2) + "\n");
+  if (scratchCleanupFailed) {
+    if (prepared.failureDetails) throw new RunFailure(prepared.failureDetails);
+    throw new Error("Agent scratch cleanup failed");
+  }
+  try {
+    await writeExclusive(prepared.resultFile, JSON.stringify(result, null, 2) + "\n");
+  } catch {
+    if (prepared.failureDetails) throw new RunFailure(prepared.failureDetails);
+    throw new Error("Agent result could not be persisted");
+  }
   return result;
 }
 

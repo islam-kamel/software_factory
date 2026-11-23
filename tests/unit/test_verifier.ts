@@ -5,15 +5,19 @@
 // Role    : Unit Test
 // API Doc : docs/implementation_plan.md, Deterministic Verifier
 // ============================================================
-import { access, mkdtemp, rm } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, readdir, realpath, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createVerifier, type CheckRunner } from "@/self_healing/verifier";
 import { DEFAULT_RESOURCE_LIMITS, type ResolvedRepository } from "@/engine/config_schemas";
+import * as runLog from "@/engine/run_log";
 
-vi.mock("@/adapters/cli_runner/sandbox", () => ({ runSandboxed: vi.fn() }));
-import { runSandboxed } from "@/adapters/cli_runner/sandbox";
+vi.mock("@/adapters/cli_runner/sandbox", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/adapters/cli_runner/sandbox")>()),
+  runSandboxed: vi.fn(),
+}));
+import { runSandboxed, SandboxCleanupError } from "@/adapters/cli_runner/sandbox";
 
 const roots: string[] = [];
 
@@ -129,4 +133,97 @@ it("provides an external scratch directory and removes it after the default chec
 
   expect(result.passed).toBe(true);
   await expect(access(scratchDirectory)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("saves captured output from cleanup failures through the private run log", async () => {
+  const repository = await makeWorkspace();
+  const workspace = await makeWorkspace();
+  const logDirectory = await makeWorkspace();
+  await chmod(logDirectory, 0o700);
+  const secret = "synthetic-unredacted-secret";
+  vi.mocked(runSandboxed).mockRejectedValue(
+    new SandboxCleanupError({
+      exitCode: 1,
+      stdout: "stdout detail",
+      stderr: secret,
+      timedOut: false,
+      outputLimit: false,
+    }),
+  );
+
+  const result = await createVerifier()({
+    repository: { ...makeRepository({ test: "tests" }), local_path: repository },
+    workspace,
+    runtimeProfile: { mounts: [], commands: { bash: "/bin/bash" }, path: "/tmp/runtime-profile.yaml" },
+    logDirectory,
+  });
+
+  expect(result).toMatchObject({
+    passed: false,
+    failed_step: "test",
+  });
+  expect(result.summary).not.toContain(secret);
+  expect(result.summary).toMatch(/^Unable to confirm sandbox cleanup: \/.*\.log$/);
+  const files = await readdir(logDirectory);
+  expect(files).toHaveLength(1);
+  const fileName = files[0];
+  if (!fileName) throw new Error("Expected one verifier log file");
+  const logPath = join(await realpath(logDirectory), fileName);
+  expect(result.summary).toContain(logPath);
+  expect(await readFile(logPath, "utf8")).toBe(`${secret}\nstdout detail`);
+  expect((await stat(logPath)).mode & 0o777).toBe(0o600);
+});
+
+it("preserves the existing raw output format for ordinary failed checks", async () => {
+  const repository = await makeWorkspace();
+  const workspace = await makeWorkspace();
+  const logDirectory = await makeWorkspace();
+  await chmod(logDirectory, 0o700);
+  const secret = "raw-check-output";
+  const result = await createVerifier(async () => ({
+    exitCode: 1,
+    stdout: "stdout detail",
+    stderr: secret,
+    timedOut: false,
+    outputLimit: false,
+  }))({
+    repository: { ...makeRepository({ test: "tests" }), local_path: repository },
+    workspace,
+    logDirectory,
+  });
+
+  expect(result).toMatchObject({ passed: false, failed_step: "test" });
+  const files = await readdir(logDirectory);
+  expect(files).toHaveLength(1);
+  const fileName = files[0];
+  if (!fileName) throw new Error("Expected one verifier log file");
+  expect(await readFile(join(await realpath(logDirectory), fileName), "utf8")).toBe(`${secret}\nstdout detail`);
+  expect((await stat(logDirectory)).mode & 0o777).toBe(0o700);
+});
+
+it("keeps failed verification explicit when the central writer rejects", async () => {
+  const repository = await makeWorkspace();
+  const workspace = await makeWorkspace();
+  const logDirectory = await makeWorkspace();
+  await chmod(logDirectory, 0o700);
+  const write = vi.spyOn(runLog, "writeRunLog").mockRejectedValue(new Error("disk full"));
+  const result = await createVerifier(async () => ({
+    exitCode: 1,
+    stdout: "",
+    stderr: "sensitive output",
+    timedOut: false,
+    outputLimit: false,
+  }))({
+    repository: { ...makeRepository({ test: "tests" }), local_path: repository },
+    workspace,
+    logDirectory,
+  });
+  write.mockRestore();
+
+  expect(result).toMatchObject({
+    passed: false,
+    failed_step: "logging",
+    summary: "Unable to save verification failure log",
+  });
+  expect(await readdir(logDirectory)).toEqual([]);
 });
